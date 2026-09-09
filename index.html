@@ -10,6 +10,7 @@
   :root {
     --page:      #0a0a0c;
     --panel:     #101014;
+    --surface:   #16161c;   /* the raised chrome layer: menus, filled controls */
     --hairline:  #1e1e24;
     --rule:      #2a2a32;
 
@@ -43,6 +44,16 @@
     --fam-3:     #7bd88f;   /* 11.36:1  Shin (n=3) */
     --fam-4:     #c48ce0;   /*  7.70:1  power */
 
+    /* §3 is TWO families. Monospace is right for numbers and wrong for interface, and a
+       page that is monospace throughout reads as terminal output rather than as an
+       application. Both stacks are system faces: §5 forbids an external fetch, so the page
+       cannot ship a webfont and does not pretend to.
+
+       The consequence is recorded rather than treated as a defect — the chrome renders in a
+       different face per platform. That is already true of the wordmark, and it is the price
+       of a page that fetches nothing. See F39 for what the same substitution costs there. */
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+            'Noto Sans', Arial, sans-serif;
     --mono: 'SF Mono','Cascadia Code','JetBrains Mono','Roboto Mono',ui-monospace,monospace;
   }
 
@@ -53,15 +64,35 @@
      scroller, and it is enforced here rather than by discipline: `html, body { height:100% }`
      with `overflow: hidden`, and the stage is the only flexible row. */
   html, body { height: 100%; overflow: hidden; }
+
+  /* `[hidden]` is a UA rule of the lowest possible weight — `display: none` from the user
+     agent stylesheet — so ANY author `display` declaration silently defeats it. `.ctl` sets
+     `display: inline-flex`, which meant the `+ pane` button carried `hidden = true` and
+     rendered anyway, in every arrangement, since step (e). Same shape as F36: a rule
+     overriding a mechanism, with no error and a page that still looks plausible. */
+  [hidden] { display: none !important; }
   body {
     margin: 0; background: var(--page); color: var(--secondary);
-    font: 12px/1.5 var(--mono); font-variant-numeric: tabular-nums;
+    font: 12px/1.5 var(--sans);
     -webkit-font-smoothing: antialiased;
   }
 
   .app { height: 100%; display: flex; flex-direction: column; padding: 0 20px; }
   .app > header { padding: 16px 0 12px; }
-  h1 { font: 600 19px/1.2 var(--mono); color: var(--primary); margin: 0; }
+  h1 { font: 600 19px/1.2 var(--sans); color: var(--primary); margin: 0; }
+
+  /* ---- §3: the numeric family, and the one place tabular figures are declared ----
+     Anything a reader compares column-wise: values, tick numbers, timestamps, the readout
+     and the status bar's figures. `tabular-nums` belongs HERE rather than on the body,
+     because it is a property of the numeric role and not of the page. */
+  .num,
+  text.tick, text.cap-note, text.clip-val, text.legend-v, text.badge-num {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  /* A readout cell whose VALUE is a name — the book, the bucket — is chrome, not a figure.
+     Scoping the numeric family to `.readout b` would have set two book names in the digit
+     face because of where they sit rather than what they are. */
+  .name { font-family: var(--sans); }
   /* The wordmark takes the page's text colour through `currentColor`, so it follows the
      token rather than carrying a hex of its own — the asset ships #000000, which on this
      background is a mark that is there and cannot be seen.
@@ -77,49 +108,93 @@
     margin: 6px 0 0; color: var(--secondary); max-width: 118ch; font-size: 12px;
   }
 
+  /* §3: uppercase with tracking survives in ONE tier — an 11px key sitting beside a value
+     in a strip. Never a title, never a control, never prose. Uppercase everywhere was the
+     tell this step removes; uppercase here is what keeps the two data strips reading as
+     instrument readouts rather than as sentences. */
   .label {
     font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
   }
-  .val { color: var(--primary); }
+  /* The mode note sits in the toolbar and is a sentence, not a key. */
+  .mode-note { font-size: 11px; color: var(--muted); }
 
-  /* ---- toolbar ---- */
+  /* ---- toolbar: its own plane ----
+     The page is a CHROME layer over a CHART layer, not one flat surface. Three depths,
+     each a token: the page beneath, the toolbar strip on `--panel`, and the controls on
+     `--surface` above that. Without the middle one the buttons float on the same ground as
+     the chart and the eye has nothing to separate the instrument from its controls. */
   .toolbar {
-    display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
+    display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap;
+    background: var(--panel);
     border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline);
-    padding: 14px 0;
+    /* 14px above and below is §9's rule for every shell divider and the surface does
+       not exempt it; the horizontal padding and the negative margin are the bleed
+       that carries the strip to the page edges, which §9 does not speak to. */
+    padding: 14px 12px; margin: 0 -12px;
   }
+  /* A divider between adjacent controls, drawn on the strip rather than around each
+     button, so the group reads as one bar of controls instead of a row of boxes. */
+  .toolbar > .divider {
+    width: 1px; align-self: stretch; background: var(--rule); margin: 0 2px;
+  }
+  /* A divider whose group has gone is a rule hanging off the end of the row. Measured on
+     the standalone panels, where `+ pane` and the sort control are both hidden and the
+     second divider was left dangling with nothing after it.
+
+     `:has()` rather than script: divider visibility is a fact about the neighbour, and the
+     neighbour's state is already in the DOM. Deriving it a second time in JavaScript would
+     be a second source for one truth, which is the shape every divergence in this register
+     starts as. */
+  .toolbar > .divider:has(+ [hidden]) { display: none; }
+
+  /* FILLED, not outlined. An outline on a dark page reads as debug UI: it says "here is a
+     box" where a filled surface says "here is a control". */
   .ctl {
-    font: 11px var(--mono); letter-spacing: .13em; text-transform: uppercase;
-    background: transparent; color: var(--secondary);
-    border: 1px solid var(--rule); padding: 6px 10px; cursor: pointer;
+    font: 12px var(--sans);
+    background: var(--surface); color: var(--secondary);
+    border: 0; padding: 7px 11px; cursor: pointer;
     display: inline-flex; align-items: center; gap: 8px;
   }
-  .ctl:hover { border-color: var(--muted); color: var(--primary); }
-  .ctl[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .ctl:hover { background: var(--rule); color: var(--primary); }
+  /* The active state is an INSET bar, not a border: it marks the control from inside its
+     own surface, so nothing changes size and the row does not shift when state changes. */
+  .ctl.current, .ctl[aria-expanded="true"] {
+    color: var(--accent); box-shadow: inset 3px 0 0 var(--accent);
+  }
+  /* The keyboard path, which had no visible state at all. `:focus-visible` rather than
+     `:focus` so a pointer press does not leave a ring behind it. */
+  .ctl:focus-visible, .menu-item:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px;
+  }
   .ctl .caret { color: var(--muted); }
-  .ctl.current { color: var(--accent); border-color: var(--accent); }
   select.ctl { appearance: none; }
   .spacer { flex: 1; }
 
   /* ---- the dropdown that replaces the pill row ---- */
   .menu-wrap { position: relative; }
+  /* ELEVATION. The menu sits ABOVE the toolbar, not beside it: a lighter surface than the
+     strip it opens from, plus a shadow deep enough to read on a near-black page. Without
+     both it looks like another region of the toolbar that happens to be taller. */
   .menu {
-    position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 20;
     min-width: 460px; max-height: 62vh; overflow-y: auto;
-    background: var(--panel); border: 1px solid var(--rule);
+    background: var(--surface); border: 1px solid var(--rule);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .72), 0 2px 6px rgba(0, 0, 0, .6);
   }
   .menu[hidden] { display: none; }
+  /* Group headers on a DARKER strip, so the menu reads as grouped rather than as a list
+     with occasional grey lines in it. */
   .menu-group {
-    font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
-    color: var(--muted); padding: 9px 12px 5px; border-top: 1px solid var(--hairline);
+    font-size: 11px; color: var(--muted); background: var(--panel);
+    padding: 7px 12px; border-top: 1px solid var(--hairline);
   }
   .menu-group:first-child { border-top: 0; }
   .menu-item {
     display: flex; gap: 12px; align-items: baseline; width: 100%;
     background: transparent; border: 0; text-align: left; cursor: pointer;
-    padding: 6px 12px; font: 12px var(--mono); color: var(--secondary);
+    padding: 6px 12px; font: 12px var(--sans); color: var(--secondary);
   }
-  .menu-item:hover { background: var(--surface, #16161c); color: var(--primary); }
+  .menu-item:hover { background: var(--rule); color: var(--primary); }
   .menu-item[aria-checked="true"] { color: var(--accent); }
   .menu-item[disabled] { color: var(--muted); cursor: not-allowed; }
   .menu-item[disabled]:hover { background: transparent; color: var(--muted); }
@@ -150,18 +225,18 @@
   rect.bar { fill: var(--data); }
   rect.bar.is-sel { fill: var(--accent) !important; }
   rect.bar.is-dim { opacity: var(--dim-alpha); }
-  rect.track { fill: var(--panel); }
   line.link { stroke: var(--data); stroke-width: 1; }
   line.link.is-sel { stroke: var(--accent) !important; stroke-width: 2; }
   line.link.is-dim { opacity: var(--dim-alpha); }
 
-  .axis, .grid { stroke: var(--rule); stroke-width: 1; }
+  .axis { stroke: var(--rule); stroke-width: 1; }
   .zero { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
   .crosshair { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
-  .pane-sep { stroke: var(--hairline); stroke-width: 1; }
 
-  .ax-label { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
+  .ax-label { font: 11px var(--sans); fill: var(--muted); }
   .tick { font: 11px var(--mono); fill: var(--muted); }
+  /* A book NAME is chrome, not a number, even though it sits in the tick row. */
+  .tick-name { font: 11px var(--sans); fill: var(--muted); }
   /* The axis carries book NAMES now, rotated, and the reference is called out in the
      accent so the anchor is findable in the label row as well as in the marks. */
   .tick-ref { fill: var(--accent); }
@@ -171,22 +246,24 @@
   .clip-val { font: 11px var(--mono); fill: var(--primary); }
   .tick.is-sel { fill: var(--accent); }
   .tick.is-dim { fill: var(--faint); }
-  .legend-k { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
+  .legend-k { font: 11px var(--sans); fill: var(--muted); }
   .legend-v { font: 12px var(--mono); fill: var(--primary); }
-  .legend-a { font: 12px var(--mono); fill: var(--accent); }
-  .series-label { font: 11px var(--mono); fill: var(--accent); }
-  .band-label { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
-  .band-sub { font: 11px var(--mono); fill: var(--muted); }
-  .band-warn { font: 11px var(--mono); fill: var(--margin); }
-  .excl-note { font: 11px var(--mono); fill: var(--muted); }
+  .series-label { font: 11px var(--sans); fill: var(--accent); }
+  .band-label { font: 11px var(--sans); fill: var(--muted); }
+  .band-sub { font: 11px var(--sans); fill: var(--muted); }
+  .band-warn { font: 11px var(--sans); fill: var(--margin); }
+  .excl-note { font: 11px var(--sans); fill: var(--muted); }
   .badge-bg { fill: var(--accent); }
-  .badge-tx { font: 11px var(--mono); fill: var(--page); }
+  /* The crosshair badge names a BOOK on the rank axis and reads a CLOCK on the time
+     axis. Two roles, one node, so the class follows the domain. */
+  .badge-tx { font: 11px var(--sans); fill: var(--page); }
+  .badge-num { font: 11px var(--mono); fill: var(--page); }
   /* §2's carve-out: a fixed family takes hues, assigned by index at draw time. */
   path.analytic-line { stroke-width: 1.4; opacity: .95; }
   line.analytic-line { stroke-width: 2; }
   circle.overlay { stroke: var(--page); stroke-width: 1; }
 
-  .pane-btn { font: 11px var(--mono); fill: var(--muted); cursor: pointer; }
+  .pane-btn { font: 11px var(--sans); fill: var(--muted); cursor: pointer; }
   .pane-btn:hover { fill: var(--accent); }
 
   /* ---- readout strip: §9. Always rendered, never display:none, defaults to the reference
@@ -216,7 +293,9 @@
   .state-offline .conn, .state-stalled .conn { color: var(--margin); }
   .statusbar b { color: var(--primary); font-weight: 600; }
   .statusbar .warn, .statusbar .warn b { color: var(--margin); }
-  .incoming { color: var(--muted); letter-spacing: .13em; }
+  /* A note, not a key: it inherited the micro-label tier's uppercase from `.label` and
+     read as a three-word shout at the end of a row of keys. §3 keeps that tier for keys. */
+  .incoming { font-size: 11px; color: var(--margin); }
 </style>
 </head>
 <body>
@@ -260,6 +339,15 @@
                 the moment the file is edited); the intrinsic width/height
                 dropped so the CSS sizes it and the viewBox sets the ratio.
 
+    Step (g)    The fallback chain after 'Arial Black' is now the page's own
+                --sans stack, character for character. Before, the mark fell
+                back through a list nothing else on the page used, so on any
+                machine without Arial Black it was set in a face that appeared
+                nowhere else — the isolation read as a design choice and was an
+                accident of two stacks written apart. A test asserts the two
+                lists still agree; they are duplicated, and only one of them can
+                drift undetected.
+
     Issue 1 is LIVE, not theoretical, and it is measured rather than
     argued. Rendered where Arial Black is absent — which is every machine
     in this repo's CI and most visitors' — the fallback lays "CLOSING LINE"
@@ -285,12 +373,12 @@
   <title id="tcl-title">The Closing Line</title>
 
   <text x="0" y="20"
-        font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+        font-family="'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif"
         font-size="26" font-weight="900" letter-spacing="4"
         fill="currentColor">THE</text>
 
   <text x="0" y="74"
-        font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+        font-family="'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif"
         font-size="52" font-weight="900"
         fill="currentColor">CLOSING LINE</text>
 </svg>
@@ -308,9 +396,11 @@
       </button>
       <div class="menu" id="series-menu" role="listbox" hidden></div>
     </div>
+    <span class="divider" aria-hidden="true"></span>
     <select class="ctl" id="event-select" aria-label="Game"></select>
     <select class="ctl" id="market-select" aria-label="Market"></select>
     <button type="button" class="ctl" id="add-pane" hidden>+ pane</button>
+    <span class="divider" aria-hidden="true"></span>
     <span class="menu-wrap" id="sort-wrap" hidden>
       <select class="ctl" id="sort-select" aria-label="Sort books by">
         <option value="hold">sort: hold</option>
@@ -319,7 +409,7 @@
       </select>
     </span>
     <span class="spacer"></span>
-    <span class="label" id="mode-note"></span>
+    <span class="mode-note" id="mode-note"></span>
   </div>
 
   <div class="stage">
@@ -336,14 +426,14 @@
   <div class="statusbar state-connecting" id="status">
     <span class="dot-i" aria-hidden="true"></span>
     <span class="label conn" id="conn">connecting</span>
-    <span class="label">rows held <b id="held">0</b></span>
-    <span class="label">newest <b id="newest">&mdash;</b></span>
-    <span class="label">books <b id="bookcount">&mdash;</b></span>
-    <span class="label">games <b id="gamecount">&mdash;</b></span>
-    <span class="label" id="age-stat">last arrival <b id="age">&mdash;</b></span>
-    <span class="label" id="gap-stat" hidden>gaps refilled <b id="gaps">0</b></span>
+    <span class="label">rows held <b id="held" class="num">0</b></span>
+    <span class="label">newest <b id="newest" class="num">&mdash;</b></span>
+    <span class="label">books <b id="bookcount" class="num">&mdash;</b></span>
+    <span class="label">games <b id="gamecount" class="num">&mdash;</b></span>
+    <span class="label" id="age-stat">last arrival <b id="age" class="num">&mdash;</b></span>
+    <span class="label" id="gap-stat" hidden>gaps refilled <b id="gaps" class="num">0</b></span>
     <span class="spacer"></span>
-    <span class="label incoming">Full platform incoming</span>
+    <span class="incoming">Full platform incoming</span>
   </div>
 </div>
 <script>
@@ -1391,8 +1481,15 @@ var Gamma = (function () {
   }
 
   /* ---- what the terminal is showing ---- */
-  let mode = FAM.BOOK;
-  let soloKey = null;
+  /* The landing chart is the convergence panel. A visitor arrives on one picture of what
+   * the market is doing rather than on three stacked strips of per-book margin, and the
+   * per-book views are one menu click away.
+   *
+   * This is a change of START STATE and nothing else. The book arrangement below is still
+   * the remembered one, so the first visit to a book series restores exactly what used to
+   * be on screen at load. */
+  let mode = FAM.SOLO;
+  let soloKey = "slope";
   /* The remembered BOOK arrangement. Plain state, so a STANDALONE round trip cannot disturb
    * it: switching away reads nothing from here and switching back writes nothing to it. */
   let bookPanes = ["hold_strip", "delta_ref", "overround"];
@@ -1702,7 +1799,7 @@ var Gamma = (function () {
       g: g, key: key, sdef: sdef,
       base: mk(g, "line", { class: "axis" }),
       zero: mk(g, "line", { class: "zero", visibility: "hidden" }),
-      lk: mk(g, "text", { class: "legend-k" }, sdef.label.toUpperCase()),
+      lk: mk(g, "text", { class: "legend-k" }, sdef.label),
       lv: mk(g, "text", { class: "legend-v" }, ""),
       hi: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
       lo: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
@@ -1826,11 +1923,24 @@ var Gamma = (function () {
       node.lo.setAttribute("x", W - SCALE_X); node.lo.setAttribute("y", f.bot);
       node.hi.textContent = series.fmt(y.hi);
       node.lo.textContent = series.fmt(y.lo);
+      /* The quantile marker sits under the top tick, and the bottom tick sits on the axis,
+       * so in a short pane the two rows meet. Measured at six panes on an 800px window: the
+       * note's box overlapped the low tick's by five pixels.
+       *
+       * It is HIDDEN rather than moved, and what that costs is bounded: the break glyph and
+       * the clipped value stay, so a cut scale is never silent — the reader loses only the
+       * name of the quantile the ceiling was taken at. A geometry test asserts exactly that,
+       * so hiding the note can never become hiding the clipping.
+       *
+       * The note moved from 9px to 11px when §3's three-size rule was held across the second
+       * family, which is what brought the two rows within reach. The resolution is a
+       * placement rule, not a fourth size. */
+      const capRoom = f.bot - (f.top + 42) >= 18;
       node.cap.setAttribute("x", W - SCALE_X); node.cap.setAttribute("y", f.top + 42);
       node.cap.textContent = !cap ? "" : (
         (capHi !== null && capLo !== null ? "p5/p95" : (capHi !== null ? "p95" : "p5"))
         + " · " + nOver);
-      node.cap.setAttribute("visibility", cap ? "visible" : "hidden");
+      node.cap.setAttribute("visibility", cap && capRoom ? "visible" : "hidden");
       node.up.setAttribute("x", W - BTN_X); node.up.setAttribute("y", f.top + 12);
       node.down.setAttribute("x", W - BTN_X); node.down.setAttribute("y", f.top + 26);
       node.close.setAttribute("x", W - BTN_X); node.close.setAttribute("y", f.top + 40);
@@ -2042,7 +2152,7 @@ var Gamma = (function () {
     axisNodes.label.setAttribute("x", 4);
     axisNodes.label.setAttribute("y", H - 8);
     axisNodes.label.textContent = domainKind === FAM.TIME
-      ? "OVER TIME" : "BY " + sortKey.toUpperCase();
+      ? "over time" : "by " + sortKey;
     while (axisNodes.ticks.length < bookOrder.length) {
       axisNodes.ticks.push(mk(stage, "text", { class: "tick", "text-anchor": "middle" }, ""));
     }
@@ -2059,6 +2169,7 @@ var Gamma = (function () {
         t.setAttribute("x", x); t.setAttribute("y", H - 8);
         t.setAttribute("text-anchor", "middle");
         t.setAttribute("transform", "");
+        /* A clock reading is a number a reader compares down the row. */
         t.setAttribute("class", "tick");
         t.textContent = (fr && (i % 5 === 0 || i === bookOrder.length - 1))
           ? fr.at.slice(11, 16) : "";
@@ -2073,7 +2184,9 @@ var Gamma = (function () {
         t.setAttribute("x", x); t.setAttribute("y", ay);
         t.setAttribute("text-anchor", "start");
         t.setAttribute("transform", "rotate(-90 " + x + " " + ay + ")");
-        t.setAttribute("class", bookOrder[i] === ref ? "tick tick-ref" : "tick");
+        /* A book NAME, so the chrome family — not the numeric one it shares a row with. */
+        t.setAttribute("class",
+          bookOrder[i] === ref ? "tick-name tick-ref" : "tick-name");
         t.textContent = bookOrder[i];
       }
     });
@@ -2130,8 +2243,13 @@ var Gamma = (function () {
     if (domainKind === FAM.TIME) {
       const fr = timeFrames()[best];
       crossNodes.tx.textContent = fr ? fr.at.slice(11, 19) : book;
+      /* Additive: `badge-tx` is the node's identity and `badge-num` is its type role.
+       * Replacing the identity class would have broken every selector that finds the badge,
+       * which is how the first version of this failed. */
+      crossNodes.tx.setAttribute("class", "badge-tx badge-num");
     } else {
       crossNodes.tx.textContent = book;
+      crossNodes.tx.setAttribute("class", "badge-tx");
     }
     if (domainKind !== FAM.TIME) pick(book, false);
     return book;
@@ -2169,8 +2287,10 @@ var Gamma = (function () {
   /* §9. Cells are created once and their text reassigned, like every other mark: the readout
    * is not exempt from the no-rebuild rule because it happens to be text. */
   const READOUT = [
-    ["book", function (q) { return q.book + (q.isExchange ? " (exchange)" : ""); }, "lit"],
-    ["bucket", function (q, b) { return bucketOf(b, q.book) || "—"; }, ""],
+    /* Fourth field: the VALUE's type. Two of these cells hold names and the rest hold
+     * figures, and §3 assigns the family by what a thing IS rather than by where it sits. */
+    ["book", function (q) { return q.book + (q.isExchange ? " (exchange)" : ""); }, "lit", "name"],
+    ["bucket", function (q, b) { return bucketOf(b, q.book) || "—"; }, "", "name"],
     ["line", function (q) { return q.line === null ? "—" : String(q.line); }, ""],
     ["price a", function (q) { return num(q.prices[0], 2); }, ""],
     ["price b", function (q) { return num(q.prices[1], 2); }, ""],
@@ -2195,6 +2315,7 @@ var Gamma = (function () {
         k.className = "label";
         k.textContent = spec[0];
         const v = document.createElement("b");
+        v.className = spec[3] || "num";
         cell.appendChild(k); cell.appendChild(v);
         host.appendChild(cell);
         readoutCells.push(v);
@@ -2357,7 +2478,7 @@ var Gamma = (function () {
     }
     /* 12px apart for 11px text put the two boxes one pixel into each other. Found by
      * comparing rectangles across every mode, not by looking at it. */
-    mk(g, "text", { x: 4, y: b1.top - 18, class: "band-label" }, "COMPARABLE");
+    mk(g, "text", { x: 4, y: b1.top - 18, class: "band-label" }, "Comparable");
     mk(g, "text", { x: 4, y: b1.top - 3, class: "band-sub" },
        board.matched.length
          ? board.referenceBook + " + " + board.matched.length + " on " +
@@ -2370,13 +2491,13 @@ var Gamma = (function () {
         const v = q.line === null ? "—" : String(q.line);
         if (lines.indexOf(v) === -1) lines.push(v);
       });
-      mk(g, "text", { x: 4, y: b2.top - 18, class: "band-label" }, "OFF THE LINE");
+      mk(g, "text", { x: 4, y: b2.top - 18, class: "band-label" }, "Off the line");
       mk(g, "text", { x: 4, y: b2.top - 3, class: "band-warn" },
          board.off_line.length + " book" + (board.off_line.length === 1 ? "" : "s") +
          " on " + lines.join(", ") + ", a different bet, never compared (B6)");
     }
-    mk(g, "text", { x: f.x0, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "IMPLIED");
-    mk(g, "text", { x: f.x1, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "FAIR");
+    mk(g, "text", { x: f.x0, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "implied");
+    mk(g, "text", { x: f.x1, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "fair");
     /* §8: exchanges appear in neither band and are LABELLED as excluded. The note lived on a
      * separate element under the old scroller; in one viewport it belongs in the panel.
      * It sits on its OWN line: it is five hundred pixels wide and it ran straight through
@@ -2428,11 +2549,11 @@ var Gamma = (function () {
       }
       stale.forEach(function (n) { g.removeChild(n); });
     }
-    mk(g, "text", { x: 4, y: f.y0 + 12, class: "legend-k" }, "HOLD VS DEVIATION");
+    mk(g, "text", { x: 4, y: f.y0 + 12, class: "legend-k" }, "Hold vs deviation");
     mk(g, "text", { x: 4, y: f.y0 + 28, class: "legend-v" },
        selected ? selected + "  " + signed2(
          (quoteFor(board, selected) || {}).delta_pp) + " pp" : "—");
-    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "HOLD %");
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "hold %");
     mk(g, "text", { x: f.x1 + 10, y: f.y0 + 6, class: "tick" }, signed2(y.hi));
     mk(g, "text", { x: f.x1 + 10, y: f.y1, class: "tick" }, signed2(y.lo));
   }
@@ -2469,7 +2590,7 @@ var Gamma = (function () {
       const swatch = mk(g, "line", { x1: f.x0 + 8, y1: ly, x2: f.x0 + 26, y2: ly,
                                      class: "analytic-line", "data-swatch": sr.m.key });
       swatch.style.setProperty("stroke", hue);
-      mk(g, "text", { x: f.x0 + 32, y: ly + 3.5, class: "legend-k" }, sr.m.label.toUpperCase());
+      mk(g, "text", { x: f.x0 + 32, y: ly + 3.5, class: "legend-k" }, sr.m.label);
       mk(g, "text", { x: f.x0 + 190, y: ly + 3.5, class: "tick" }, sr.m.note);
     });
     [0.5, 1 / 3].forEach(function (c) {
@@ -2477,7 +2598,7 @@ var Gamma = (function () {
       mk(g, "text", { x: x(c), y: f.y1 + 18, class: "tick", "text-anchor": "middle" },
          "p = " + (c === 0.5 ? "1/2" : "1/3"));
     });
-    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "PROBABILITY");
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "probability");
     mk(g, "text", { x: f.x1, y: f.y0 - 8, class: "ax-label", "text-anchor": "end" },
        "BETA AT V = 0.05");
   }
@@ -2528,7 +2649,7 @@ var Gamma = (function () {
       soloNodes[q.book] = { dot: soloMark(q.book, mk(g, "circle",
         { cx: x(pt[0]), cy: yv(pt[1]), r: 4, class: "dot overlay" })) };
     });
-    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "FAIR PROBABILITY");
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "fair probability");
     mk(g, "text", { x: f.x1, y: H - 20, class: "ax-label", "text-anchor": "end" },
        "HOLD, 0 TO " + (R_VMAX * 100).toFixed(0) + "%");
   }
@@ -2537,9 +2658,23 @@ var Gamma = (function () {
    * THE TOOLBAR — the dropdown replaces the pill row entirely. §3 of the step brief.
    * ===================================================================== */
 
+  /* THE MENU IS BUILT ONCE AND UPDATED IN PLACE — F40.
+   *
+   * It used to be torn down and recreated by `refresh()`, which runs on every arriving row.
+   * Zero of seventeen buttons survived a redraw, so a row landing while the menu was open
+   * replaced every item under the reader's pointer and dropped keyboard focus to the body.
+   * The chart layer has been update-in-place since step (c) for exactly this reason; the
+   * chrome was never held to the same rule.
+   *
+   * Everything a menu item shows except its checked state is a fixed property of the
+   * registry entry — the label, the form, whether it is deferred and what it awaits — so
+   * only `aria-checked` is written on a redraw. */
+  const menuItems = {};
+
   function buildMenu() {
     const box = $("series-menu");
     box.textContent = "";
+    for (const k in menuItems) delete menuItems[k];
     const groups = [
       [FAM.BOOK, "Book-indexed · stack and share the crosshair"],
       [FAM.SOLO, "Standalone · replaces the panel"],
@@ -2571,13 +2706,24 @@ var Gamma = (function () {
           aw.textContent = sd.why;
           b.appendChild(aw);
         } else {
-          const on = sd.family === FAM.BOOK ? bookPanes.indexOf(sd.key) !== -1
-            : (sd.family === FAM.TIME ? (mode === FAM.TIME && timePanes.indexOf(sd.key) !== -1)
-            : (mode === FAM.SOLO && soloKey === sd.key));
-          b.setAttribute("aria-checked", String(on));
+          menuItems[sd.key] = b;
         }
         box.appendChild(b);
       });
+    });
+    syncMenu();
+  }
+
+  /* The only thing a redraw writes. Keyed by SERIES, not by position: a check keyed on
+   * index cannot tell a rebuilt list from a preserved one, which is F30. */
+  function syncMenu() {
+    REGISTRY.forEach(function (sd) {
+      const b = menuItems[sd.key];
+      if (!b) return;
+      const on = sd.family === FAM.BOOK ? bookPanes.indexOf(sd.key) !== -1
+        : (sd.family === FAM.TIME ? (mode === FAM.TIME && timePanes.indexOf(sd.key) !== -1)
+        : (mode === FAM.SOLO && soloKey === sd.key));
+      b.setAttribute("aria-checked", String(on));
     });
   }
 
@@ -2699,7 +2845,7 @@ var Gamma = (function () {
       sdef.draw(boardNow);
       drawContext();
     }
-    buildMenu();
+    syncMenu();
     highlight();
   }
 
@@ -2729,7 +2875,10 @@ var Gamma = (function () {
 
   /* ---------- connection state ---------- */
   function setState(name, label) {
-    $("status").className = "status state-" + name;
+    /* "statusbar", not "status". The markup ships `class="statusbar state-connecting"` and
+     * this line replaced it with `status`, so every rule scoped to `.statusbar` stopped
+     * applying the moment the first state changed — which is immediately, on connect. F41. */
+    $("status").className = "statusbar state-" + name;
     $("conn").textContent = label;
   }
 
@@ -2738,12 +2887,14 @@ var Gamma = (function () {
    * does not wait for an arrival to update. */
   function tickAge() {
     const stat = $("age-stat");
-    if (lastArrival === null) { $("age").textContent = "—"; stat.className = "stat"; return; }
+    /* Same defect, second site: this wrote "stat", a class with no rule anywhere, over the
+     * "label" the markup ships. The age field lost its type tier on the first tick. */
+    if (lastArrival === null) { $("age").textContent = "—"; stat.className = "label"; return; }
     const secs = Math.round((Date.now() - lastArrival) / 1000);
     $("age").textContent = secs + "s ago";
     // The poller's period is 60s. Past two and a half of them, something is wrong.
     const stale = secs > 150;
-    stat.className = stale ? "stat warn" : "stat";
+    stat.className = stale ? "label warn" : "label";
     if (stale && $("status").className.indexOf("state-live") !== -1) {
       setState("stalled", "stalled");
     } else if (!stale && $("status").className.indexOf("state-stalled") !== -1) {
@@ -2938,10 +3089,72 @@ var Gamma = (function () {
     const parts = mv.split(":");
     movePane(parts[0], parts[1]);
   });
+  /* ---------- popups: one registry, rules written for N ----------
+   *
+   * There is one custom popup today. The rules below are written over a LIST anyway,
+   * because "opening one closes the others" and "a click outside closes them" are not
+   * statements about this menu — they are statements about popups, and a second one added
+   * later should inherit them rather than re-implement them.
+   *
+   * What this cannot reach: the three native `<select>` controls. A browser owns their
+   * popup and there is no API to close it, so opening this menu cannot dismiss an open
+   * select. Stated rather than silently not done.
+   *
+   * Every listener here is bound ONCE, to `document`, outside any draw function — §1. */
+  const POPUPS = [];
+
+  function registerPopup(panel, triggers) {
+    POPUPS.push({ panel: panel, triggers: triggers });
+  }
+
+  function popupOpen(p) { return !p.panel.hidden; }
+
+  /* `restoreFocus` is the difference between the two dismissal paths, and it is not
+   * cosmetic. Escape is a keyboard act: focus must land somewhere predictable, and the
+   * trigger is where the user was. A click outside is a pointer act that has already
+   * chosen its own target, and stealing focus back would fight it. */
+  function closePopup(p, restoreFocus) {
+    if (!popupOpen(p)) return;
+    const held = p.panel.contains(document.activeElement);
+    p.panel.hidden = true;
+    p.triggers.forEach(function (t) { t.setAttribute("aria-expanded", "false"); });
+    if (restoreFocus && (held || document.activeElement === document.body)) {
+      p.triggers[0].focus();
+    }
+  }
+
+  function openPopup(p) {
+    POPUPS.forEach(function (q) { if (q !== p) closePopup(q, false); });
+    p.panel.hidden = false;
+    p.triggers.forEach(function (t) { t.setAttribute("aria-expanded", "true"); });
+  }
+
+  function closeAllPopups(restoreFocus) {
+    POPUPS.forEach(function (p) { closePopup(p, restoreFocus); });
+  }
+
+  function popupContains(node) {
+    return POPUPS.some(function (p) {
+      return p.panel.contains(node) || p.triggers.some(function (t) {
+        return t === node || t.contains(node);
+      });
+    });
+  }
+
+  registerPopup($("series-menu"), [$("series-btn"), $("add-pane")]);
+
+  /* `pointerdown`, not `click`: a press outside dismisses immediately, and a drag that
+   * starts inside the panel and releases outside does not. */
+  document.addEventListener("pointerdown", function (e) {
+    if (!popupContains(e.target)) closeAllPopups(false);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeAllPopups(true);
+  });
+
   $("series-btn").addEventListener("click", function () {
-    const m = $("series-menu");
-    m.hidden = !m.hidden;
-    $("series-btn").setAttribute("aria-expanded", String(!m.hidden));
+    const p = POPUPS[0];
+    if (popupOpen(p)) closePopup(p, false); else openPopup(p);
   });
   $("series-menu").addEventListener("click", function (e) {
     let el = e.target;
@@ -2950,11 +3163,7 @@ var Gamma = (function () {
     if (el.disabled) return;
     chooseSeries(el.getAttribute("data-series"));
   });
-  $("add-pane").addEventListener("click", function () {
-    const m = $("series-menu");
-    m.hidden = false;
-    $("series-btn").setAttribute("aria-expanded", "true");
-  });
+  $("add-pane").addEventListener("click", function () { openPopup(POPUPS[0]); });
   $("sort-select").addEventListener("change", function () {
     sortKey = $("sort-select").value;
     refresh();
