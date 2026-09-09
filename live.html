@@ -1,0 +1,2539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Closing Line — live</title>
+<style>
+  /* Tokens are specs/charting-spec.md §2 and §3. Ratios are recomputed from the rendered
+     page by tests/realdata/closingline/test_live_style.py, never trusted from here. */
+  :root {
+    --page:      #0a0a0c;
+    --panel:     #101014;
+    --hairline:  #1e1e24;
+    --rule:      #2a2a32;
+
+    --primary:   #fafafa;   /* 18.95:1 */
+    --secondary: #a1a1aa;   /*  7.72:1 */
+    --muted:     #8a8a93;   /*  5.78:1 — floor for any readable text */
+    --faint:     #52525b;   /*  2.56:1 — non-text only */
+
+    --accent:    #22d3ee;   /* 10.95:1 */
+    --margin:    #f59e0b;   /*  9.21:1 */
+    --data:      #4a6a78;   /*  3.41:1 */
+    --data-dim:  #324751;   /*  2.03:1 */
+
+    --mono: 'SF Mono','Cascadia Code','JetBrains Mono','Roboto Mono',ui-monospace,monospace;
+  }
+
+  * { box-sizing: border-box; border-radius: 0; }
+
+  /* §4, extended: ONE VIEWPORT. The page does not grow when a pane is added — the panes
+     divide the space that is there. That is the difference between a terminal and a
+     scroller, and it is enforced here rather than by discipline: `html, body { height:100% }`
+     with `overflow: hidden`, and the stage is the only flexible row. */
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    margin: 0; background: var(--page); color: var(--secondary);
+    font: 12px/1.5 var(--mono); font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app { height: 100%; display: flex; flex-direction: column; padding: 0 20px; }
+  .app > header { padding: 16px 0 12px; }
+  h1 { font: 600 19px/1.2 var(--mono); color: var(--primary); margin: 0; }
+  .subtitle {
+    margin: 6px 0 0; color: var(--secondary); max-width: 118ch; font-size: 12px;
+  }
+
+  .label {
+    font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
+  }
+  .val { color: var(--primary); }
+
+  /* ---- toolbar ---- */
+  .toolbar {
+    display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
+    border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline);
+    padding: 14px 0;
+  }
+  .ctl {
+    font: 11px var(--mono); letter-spacing: .13em; text-transform: uppercase;
+    background: transparent; color: var(--secondary);
+    border: 1px solid var(--rule); padding: 6px 10px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .ctl:hover { border-color: var(--muted); color: var(--primary); }
+  .ctl[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .ctl .caret { color: var(--muted); }
+  .ctl.current { color: var(--accent); border-color: var(--accent); }
+  select.ctl { appearance: none; }
+  .spacer { flex: 1; }
+
+  /* ---- the dropdown that replaces the pill row ---- */
+  .menu-wrap { position: relative; }
+  .menu {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+    min-width: 460px; max-height: 62vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--rule);
+  }
+  .menu[hidden] { display: none; }
+  .menu-group {
+    font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--muted); padding: 9px 12px 5px; border-top: 1px solid var(--hairline);
+  }
+  .menu-group:first-child { border-top: 0; }
+  .menu-item {
+    display: flex; gap: 12px; align-items: baseline; width: 100%;
+    background: transparent; border: 0; text-align: left; cursor: pointer;
+    padding: 6px 12px; font: 12px var(--mono); color: var(--secondary);
+  }
+  .menu-item:hover { background: var(--surface, #16161c); color: var(--primary); }
+  .menu-item[aria-checked="true"] { color: var(--accent); }
+  .menu-item[disabled] { color: var(--muted); cursor: not-allowed; }
+  .menu-item[disabled]:hover { background: transparent; color: var(--muted); }
+  .menu-item .form { color: var(--muted); font-size: 11px; }
+  .menu-item .await { color: var(--margin); font-size: 11px; }
+  .menu-item .spacer { flex: 1; }
+
+  /* ---- the stage: the only row that flexes ---- */
+  .stage { flex: 1; min-height: 0; position: relative; }
+  svg#stage { display: block; width: 100%; height: 100%; }
+
+  path.mark { fill: none; stroke: var(--data); stroke-width: 1; opacity: .85; }
+  path.mark.is-sel { stroke: var(--accent); stroke-width: 2; opacity: 1; }
+  path.mark.is-dim { stroke: var(--data-dim); stroke-width: 1; }
+  path.mark.is-off { stroke-dasharray: 4 3; }
+  path.hit { fill: none; stroke: transparent; stroke-width: 11; cursor: pointer; }
+
+  circle.dot { fill: var(--data); }
+  circle.dot.is-sel { fill: var(--accent); }
+  circle.dot.is-dim { fill: var(--data-dim); }
+  circle.hit-dot { fill: transparent; cursor: pointer; }
+  rect.hit-col { fill: transparent; cursor: pointer; }
+  rect.cell { stroke: none; }
+  rect.cell.is-sel { stroke: var(--accent); stroke-width: 1; }
+  rect.bar { fill: var(--data); }
+  rect.bar.is-sel { fill: var(--accent); }
+  rect.bar.is-dim { fill: var(--data-dim); }
+  rect.track { fill: var(--panel); }
+  line.link { stroke: var(--data); stroke-width: 1; }
+  line.link.is-sel { stroke: var(--accent); stroke-width: 2; }
+  line.link.is-dim { stroke: var(--data-dim); }
+
+  .axis, .grid { stroke: var(--rule); stroke-width: 1; }
+  .zero { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
+  .crosshair { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
+  .pane-sep { stroke: var(--hairline); stroke-width: 1; }
+
+  .ax-label { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
+  .tick { font: 11px var(--mono); fill: var(--muted); }
+  .tick.is-sel { fill: var(--accent); }
+  .tick.is-dim { fill: var(--faint); }
+  .legend-k { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
+  .legend-v { font: 12px var(--mono); fill: var(--primary); }
+  .legend-a { font: 12px var(--mono); fill: var(--accent); }
+  .series-label { font: 11px var(--mono); fill: var(--accent); }
+  .band-label { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
+  .band-sub { font: 11px var(--mono); fill: var(--muted); }
+  .band-warn { font: 11px var(--mono); fill: var(--margin); }
+  .excl-note { font: 11px var(--mono); fill: var(--muted); }
+  .badge-bg { fill: var(--accent); }
+  .badge-tx { font: 11px var(--mono); fill: var(--page); }
+  path.analytic-line { stroke: var(--data); stroke-width: 1; opacity: .85; }
+  circle.overlay { stroke: var(--page); stroke-width: 1; }
+
+  .pane-btn { font: 11px var(--mono); fill: var(--muted); cursor: pointer; }
+  .pane-btn:hover { fill: var(--accent); }
+
+  /* ---- readout strip: §9. Always rendered, never display:none, defaults to the reference
+     so a visitor who never interacts still sees the method. The per-pane legends carry one
+     number each; this carries the whole quote, which is what §9 asks for and what a pane
+     cannot show without becoming a table. Not repealed by the terminal shell. ---- */
+  .readout {
+    display: flex; flex-wrap: wrap; gap: 4px 22px; align-items: baseline;
+    border-top: 1px solid var(--hairline); padding: 14px 0;
+  }
+  .readout .cell { display: flex; gap: 6px; align-items: baseline; }
+  .readout .cell b { color: var(--primary); font-weight: 600; }
+  .readout .cell.lit b { color: var(--accent); }
+  .readout .cell.margin b { color: var(--margin); }
+
+  /* ---- status bar ---- */
+  .statusbar {
+    display: flex; align-items: baseline; gap: 8px 20px; flex-wrap: wrap;
+    border-top: 1px solid var(--hairline); padding: 14px 0;
+  }
+  .dot-i { width: 8px; height: 8px; flex: none; background: var(--faint); }
+  .state-live .dot-i { background: var(--accent); }
+  .state-connecting .dot-i, .state-reconnecting .dot-i,
+  .state-offline .dot-i, .state-stalled .dot-i { background: var(--margin); }
+  .state-live .conn { color: var(--accent); }
+  .state-connecting .conn, .state-reconnecting .conn,
+  .state-offline .conn, .state-stalled .conn { color: var(--margin); }
+  .statusbar b { color: var(--primary); font-weight: 600; }
+  .statusbar .warn, .statusbar .warn b { color: var(--margin); }
+  .incoming { color: var(--muted); letter-spacing: .13em; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>The Closing Line</h1>
+    <p class="subtitle">A research terminal for sports betting. Live sharp-market
+      microstructure, strategy testing under anytime-valid inference, and a season record
+      that certifies itself with a stated error rate. Full platform incoming.</p>
+  </header>
+
+  <div class="toolbar">
+    <div class="menu-wrap">
+      <button type="button" class="ctl current" id="series-btn" aria-expanded="false"
+              aria-haspopup="listbox">
+        <span id="series-name">implied &rarr; fair</span><span class="caret">&#9662;</span>
+      </button>
+      <div class="menu" id="series-menu" role="listbox" hidden></div>
+    </div>
+    <select class="ctl" id="event-select" aria-label="Game"></select>
+    <select class="ctl" id="market-select" aria-label="Market"></select>
+    <button type="button" class="ctl" id="add-pane" hidden>+ pane</button>
+    <span class="menu-wrap" id="sort-wrap" hidden>
+      <select class="ctl" id="sort-select" aria-label="Sort books by">
+        <option value="hold">sort: hold</option>
+        <option value="fair">sort: fair</option>
+        <option value="name">sort: name</option>
+      </select>
+    </span>
+    <span class="spacer"></span>
+    <span class="label" id="mode-note"></span>
+  </div>
+
+  <div class="stage">
+    <svg id="stage" viewBox="0 0 1000 520" role="img"
+         aria-labelledby="stage-title" aria-describedby="stage-desc">
+      <title id="stage-title">The chart application</title>
+      <desc id="stage-desc">Stacked panes sharing one horizontal axis and one crosshair, or a
+        single standalone panel, depending on the selected series.</desc>
+    </svg>
+  </div>
+
+  <div class="readout" id="readout"></div>
+
+  <div class="statusbar state-connecting" id="status">
+    <span class="dot-i" aria-hidden="true"></span>
+    <span class="label conn" id="conn">connecting</span>
+    <span class="label">rows held <b id="held">0</b></span>
+    <span class="label">newest <b id="newest">&mdash;</b></span>
+    <span class="label">books <b id="bookcount">&mdash;</b></span>
+    <span class="label">games <b id="gamecount">&mdash;</b></span>
+    <span class="label" id="age-stat">last arrival <b id="age">&mdash;</b></span>
+    <span class="label" id="gap-stat" hidden>gaps refilled <b id="gaps">0</b></span>
+    <span class="spacer"></span>
+    <span class="label incoming">Full platform incoming</span>
+  </div>
+</div>
+<script>
+/* slice/layer4/devig.js, inlined verbatim. Proven bit-identical to devig.py at zero
+ * tolerance by tests/test_devig_parity.py, which evaluates this same file's bytes. */
+/* Devigging methods for two-sided markets — the browser-side port of devig.py.
+ *
+ * A LITERAL transcription of `slice/layer4/devig.py`, agreeing with it bit-for-bit.
+ * Both languages use IEEE 754 binary64, and +, - and / are correctly rounded in both,
+ * so bit-equality follows from the standard — PROVIDED the operation order is preserved.
+ * It is not an approximation to be reordered for elegance:
+ *
+ *     additive returns `p_a - overround / 2.0`, NOT the algebraically equal
+ *     `(p_a - p_b + 1) / 2`. Those two forms differ by one unit in the last place
+ *     on 772 of 2304 sampled price pairs.
+ *
+ * Proven against `slice/layer4/parity/devig_parity.json` by
+ * `tests/test_devig_parity.py`, which evaluates THIS FILE'S BYTES — the same bytes
+ * that get inlined into the page. A bare script, no import/export, no dependency,
+ * no build step.
+ *
+ * NAMING COLLISION, because these two live one call apart in a browser:
+ *   `overround` HERE (and in devig.py)   = book sum MINUS ONE.
+ *   `overround` in board.py / board_quote.js = the book sum ITSELF.
+ * See board_quote.js.
+ *
+ * Errors: see DevigError. Messages devig.py authors are reproduced byte for byte.
+ * Messages CPython authors are a DECLARED equivalence, tabulated in the fixture.
+ */
+
+var Devig = (function () {
+  "use strict";
+
+  /* Carries the Python exception type name, so a declared equivalence is checkable
+   * rather than merely asserted in prose. `pyType` is one of ValueError, TypeError,
+   * ZeroDivisionError, NotImplementedError. */
+  class DevigError extends Error {
+    constructor(pyType, message) {
+      super(message);
+      this.name = "DevigError";
+      this.pyType = pyType;
+    }
+  }
+
+  /* Python's repr(float), byte for byte.
+   *
+   * Needed because devig.py interpolates the offending values into its own error
+   * messages, and JS disagrees with Python on all of: integral values ("2" vs "2.0"),
+   * infinity ("Infinity" vs "inf"), NaN ("NaN" vs "nan"), negative zero ("0" vs
+   * "-0.0"), and the thresholds at which each switches to exponent notation.
+   *
+   * Python uses exponent form iff decpt <= -4 or decpt > 16, with a signed exponent
+   * of at least two digits; JS switches at 1e-7 and 1e21 and never pads the exponent.
+   * Verified over 14040 values, including both threshold boundaries and subnormals. */
+  function pyRepr(x) {
+    if (Number.isNaN(x)) return "nan";
+    if (x === Infinity) return "inf";
+    if (x === -Infinity) return "-inf";
+    const neg = x < 0 || Object.is(x, -0);
+    const a = Math.abs(x);
+    if (a === 0) return neg ? "-0.0" : "0.0";
+    const m = a.toExponential().match(/^(\d)(?:\.(\d+))?e([+-]\d+)$/);
+    const digits = m[1] + (m[2] || "");
+    const decpt = parseInt(m[3], 10) + 1;
+    let out;
+    if (decpt <= -4 || decpt > 16) {
+      const e = decpt - 1;
+      const frac = digits.slice(1);
+      const es = (e < 0 ? "-" : "+") + String(Math.abs(e)).padStart(2, "0");
+      out = digits[0] + (frac ? "." + frac : "") + "e" + es;
+    } else if (decpt <= 0) {
+      out = "0." + "0".repeat(-decpt) + digits;
+    } else if (decpt >= digits.length) {
+      out = digits + "0".repeat(decpt - digits.length) + ".0";
+    } else {
+      out = digits.slice(0, decpt) + "." + digits.slice(decpt);
+    }
+    return (neg ? "-" : "") + out;
+  }
+
+  /* Mirrors devig.py's `_validate_two_sided`, INCLUDING the order in which the
+   * failures occur. Python unpacks before it compares, so an arity failure precedes
+   * the range guard and a non-numeric element fails at the comparison, not the
+   * unpack. Trigger order is part of what the fixture asserts. */
+  function validateTwoSided(oddsTwoSided) {
+    if (!Array.isArray(oddsTwoSided)) {
+      // Python: `o_a, o_b = 2.0` -> TypeError, cannot unpack non-iterable float object
+      throw new DevigError(
+        "TypeError",
+        "cannot unpack non-array odds_two_sided"
+      );
+    }
+    if (oddsTwoSided.length !== 2) {
+      // Python: ValueError from unpacking, "not enough"/"too many values to unpack"
+      throw new DevigError(
+        "ValueError",
+        "odds_two_sided must hold exactly 2 values; got " + oddsTwoSided.length
+      );
+    }
+    for (const o of oddsTwoSided) {
+      if (typeof o !== "number") {
+        // Python: TypeError, '<=' not supported between instances of 'str' and 'float'
+        throw new DevigError(
+          "TypeError",
+          "'<=' not supported between decimal odds of type " +
+            typeof o +
+            " and float"
+        );
+      }
+    }
+    const o_a = oddsTwoSided[0];
+    const o_b = oddsTwoSided[1];
+    // NaN fails both comparisons, so it passes this guard exactly as Python's does.
+    if (o_a <= 1.0 || o_b <= 1.0) {
+      throw new DevigError(
+        "ValueError",
+        "both decimal odds must be > 1.0; got (" +
+          pyRepr(o_a) +
+          ", " +
+          pyRepr(o_b) +
+          ")"
+      );
+    }
+  }
+
+  /* Standard proportional devigging. devig.py:23-36. */
+  function multiplicative(oddsTwoSided) {
+    validateTwoSided(oddsTwoSided);
+    const o_a = oddsTwoSided[0];
+    const o_b = oddsTwoSided[1];
+    const p_a = 1.0 / o_a;
+    const p_b = 1.0 / o_b;
+    const s = p_a + p_b;
+    /* EXPLICIT, not inherited. Both odds infinite underflows the sum to zero, where
+     * Python raises and JS would return NaN. NaN is the worst available way to
+     * disagree: it propagates into a chart instead of surfacing. */
+    if (s === 0) {
+      throw new DevigError("ZeroDivisionError", "float division by zero");
+    }
+    return [p_a / s, p_b / s];
+  }
+
+  /* Additive devigging — subtract half the overround from each side. devig.py:39-56.
+   * `overround` here is the book sum MINUS ONE, per the header note. */
+  function additive(oddsTwoSided) {
+    validateTwoSided(oddsTwoSided);
+    const o_a = oddsTwoSided[0];
+    const o_b = oddsTwoSided[1];
+    const p_a = 1.0 / o_a;
+    const p_b = 1.0 / o_b;
+    const overround = p_a + p_b - 1.0;
+    return [p_a - overround / 2.0, p_b - overround / 2.0];
+  }
+
+  /* Shin (1992). DEFERRED — devig.py:59-66 raises before touching its argument, so
+   * this raises on invalid input and on wrong arity too. Message is devig.py's own,
+   * reproduced byte for byte.
+   *
+   * At n = 2 the Shin and additive maps are the same map, exactly, at every price and
+   * every hold — so deferring this costs nothing on two-way markets. */
+  function shin(oddsTwoSided) {
+    throw new DevigError(
+      "NotImplementedError",
+      "Shin devigging deferred per slice non-goals"
+    );
+  }
+
+  /* Power devigging. DEFERRED — devig.py:69-76. The `power` argument is accepted and
+   * never read, matching the Python. */
+  function power(oddsTwoSided, powerExponent) {
+    throw new DevigError(
+      "NotImplementedError",
+      "Power devigging deferred per slice non-goals"
+    );
+  }
+
+  /* Mid-price implied probability for an exchange's two-sided market. devig.py:79-91.
+   * `ask` is never checked against 1.0 on its own; NaN in either argument returns NaN
+   * without raising, because every comparison against NaN is false. */
+  function spreadToImpliedProb(bid, ask) {
+    if (typeof bid !== "number" || typeof ask !== "number") {
+      throw new DevigError(
+        "TypeError",
+        "'<=' not supported between bid/ask of non-float type and float"
+      );
+    }
+    if (bid <= 1.0) {
+      throw new DevigError("ValueError", "bid must be > 1.0; got " + pyRepr(bid));
+    }
+    if (bid > ask) {
+      throw new DevigError(
+        "ValueError",
+        "bid must be <= ask; got bid=" + pyRepr(bid) + ", ask=" + pyRepr(ask)
+      );
+    }
+    return (1.0 / bid + 1.0 / ask) / 2.0;
+  }
+
+  return {
+    DevigError: DevigError,
+    pyRepr: pyRepr,
+    multiplicative: multiplicative,
+    additive: additive,
+    shin: shin,
+    power: power,
+    spreadToImpliedProb: spreadToImpliedProb,
+  };
+})();
+
+</script>
+<script>
+/* realdata/closingline/board_quote.js, inlined verbatim, AFTER devig.js because it reads
+ * the free global `Devig`. Proven against board.py:224-256 by
+ * tests/realdata/closingline/test_board_quote_parity.py, over the same bytes. */
+/* One book's two-sided quote, devigged — the browser-side port of board.py's `_devig`.
+ *
+ * A LITERAL transcription of `realdata/closingline/board.py:224-256`, agreeing with it
+ * bit-for-bit. Depends on `Devig` from `slice/layer4/devig.js`, which must be evaluated
+ * first. Direction is realdata -> slice, which is the permitted one.
+ *
+ * Proven against `realdata/closingline/parity/board_quote_parity.json` by
+ * `tests/realdata/closingline/test_board_quote_parity.py`, which evaluates THIS FILE'S
+ * BYTES. A bare script, no import/export, no dependency, no build step.
+ *
+ * NAMING COLLISION — the reason this note appears in both files:
+ *   `overround` HERE (and in board.py) = the book sum ITSELF, p_a + p_b.
+ *   `overround` in devig.js / devig.py = the book sum MINUS ONE.
+ * Carrying this file's vocabulary into the devig math would be wrong in a way that
+ * still produces plausible numbers.
+ *
+ * WHAT THIS FILE DELIBERATELY DOES NOT PORT: `_market_board`. Outcome alignment,
+ * bucketing, and the B1-B6 constraints stay server-side, which is what poller.py
+ * already does at encode time. Moving them into the browser is precisely what
+ * realdata/closingline/__init__.py warns against.
+ */
+
+var BoardQuote = (function () {
+  "use strict";
+
+  /* board.py:224-242. Returns null where the Python returns None.
+   *
+   * NOTE the asymmetry with devig.js: on the SAME predicate — either price at or
+   * below 1.0 — this returns null and `Devig.multiplicative` throws. Two responses to
+   * one condition, one frame apart. The board answers with None so the quote is
+   * dropped from the board rather than failing the render. */
+  function quote(prices) {
+    if (!Array.isArray(prices) || prices.length !== 2) {
+      return null;
+    }
+    if (prices[0] <= 1.0 || prices[1] <= 1.0) {
+      return null;
+    }
+    const implied = [1.0 / prices[0], 1.0 / prices[1]];
+    // The book sum. Named `overround` to match board.py's field, not devig.py's local.
+    const overround = implied[0] + implied[1];
+    /* Unreachable for valid input, since both implied values are strictly positive.
+     * Present because board.py has it, and because NaN passes it there too:
+     * `NaN <= 0.0` is false in both languages. */
+    if (overround <= 0.0) {
+      return null;
+    }
+    const fair = Devig.multiplicative(prices);
+    return {
+      prices: [prices[0], prices[1]],
+      implied: implied,
+      overround: overround,
+      hold: (overround - 1.0) / overround,
+      fair: fair,
+      delta_pp: null,
+    };
+  }
+
+  /* board.py:245-256. Two operations, in this order.
+   *
+   * `fairA` is role index ZERO, and role order comes from the REFERENCE BOOK's own
+   * outcome order (board.py:180-192) — not from any canonical home-away convention.
+   * The landed corpus lists home first 34049 times and away first 22645 times, so the
+   * SIGN of this number depends on how Pinnacle happened to order that market. A
+   * reader who assumes home-first will misread roughly two markets in five. */
+  function deltaPp(fairA, referenceFairA) {
+    return (fairA - referenceFairA) * 100.0;
+  }
+
+  return {
+    quote: quote,
+    deltaPp: deltaPp,
+  };
+})();
+
+</script>
+<script>
+/* realdata/closingline/live_board.js, inlined verbatim, AFTER board_quote.js because it
+ * reads the free global `BoardQuote`. Proven against the landed poller.decode ->
+ * board._market_board chain by tests/realdata/closingline/test_live_board_parity.py. */
+/* One (event, market) panel, bucketed — the browser-side port of board.py's `_market_board`
+ * bucketing, driven from the poller's positional payload instead of the raw API response.
+ *
+ * WHY THIS EXISTS AT ALL, AND WHAT IT COSTS. `realdata/closingline/__init__.py:10-12` states
+ * that the board's constraints live in `board.py` "so a template rewrite cannot silently drop
+ * one", and `board_quote.js:17-20` declines to port `_market_board` for exactly that reason.
+ * The live page has no server-side board, so the seam moves whether or not anyone likes it.
+ * It is moved WITH its proof rather than without: `parity/live_board_parity.json`, generated
+ * from the landed `poller.decode` -> `board._market_board` chain, with four red-proofs that
+ * each go red on a different rule being dropped. See F26.
+ *
+ * WHAT THE PAYLOAD CANNOT TELL US (F26). `board.py:34` holds
+ * `EXCHANGES = frozenset({"betfair_ex_eu", "matchbook"})`. `poller.py` imports
+ * BOARD_MARKETS, REFERENCE_BOOK and TOTALS_ROLES from board.py and NOT this set, and emits no
+ * `is_exchange` field, so B4 cannot be derived from a payload — only re-asserted. The
+ * duplication below is the ruled workaround, NOT the design: the fix is the poller emitting
+ * the set, which is a payload change and therefore a schema bump, a new image and a restart.
+ * `test_live_board_parity.py` asserts this list equals `board.EXCHANGES`, so the two copies
+ * cannot drift apart silently — which is the only thing that makes the duplication safe.
+ *
+ * DEPENDS on `BoardQuote` (and through it `Devig`), which must be evaluated first.
+ * A bare script, no import/export, no dependency, no build step.
+ */
+
+var LiveBoard = (function () {
+  "use strict";
+
+  /* board.py:34, duplicated. See the header: this is re-asserted, not derived, and the
+   * parity test is what stops it drifting. */
+  var EXCHANGES = ["betfair_ex_eu", "matchbook"];
+
+  function isExchange(book) {
+    return EXCHANGES.indexOf(book) !== -1;
+  }
+
+  /* board.py:308-309. `-abs(delta_pp)` first, then the book key. Python's sort and JS's are
+   * both stable, and both compare ASCII strings by code point, so the tuple comparison
+   * transcribes directly. */
+  function byDistance(a, b) {
+    var da = -Math.abs(a.delta_pp === null ? 0.0 : a.delta_pp);
+    var db = -Math.abs(b.delta_pp === null ? 0.0 : b.delta_pp);
+    if (da !== db) return da < db ? -1 : 1;
+    return a.book < b.book ? -1 : (a.book > b.book ? 1 : 0);
+  }
+
+  /* board.py:311-312. A null line sorts as 0.0, matching `q.line if ... is not None else 0.0`. */
+  function byLine(a, b) {
+    var la = a.line === null ? 0.0 : a.line;
+    var lb = b.line === null ? 0.0 : b.line;
+    if (la !== lb) return la < lb ? -1 : 1;
+    return a.book < b.book ? -1 : (a.book > b.book ? 1 : 0);
+  }
+
+  /* Bucket one panel. Returns null exactly where `_market_board` returns None:
+   *   - the market is not in the payload's legend            (board.py:271-273)
+   *   - the reference book does not quote it            (B5, board.py:264-268)
+   *   - the reference book's own quote is unusable       (board.py:280-282)
+   *
+   * `dropped` has no counterpart in `_market_board`, which discards such quotes silently.
+   * It is returned so the partition assertion can be total: matched + off_line + exchanges
+   * + dropped + the reference must account for every row in the panel, with both sides of
+   * that equation derived rather than hardcoded.
+   */
+  function bucket(payload, eventIdx, marketKey) {
+    if (!payload || !payload.markets || !payload.rows) return null;
+    var marketIdx = payload.markets.indexOf(marketKey);
+    if (marketIdx < 0) return null;
+    if (!(eventIdx >= 0 && eventIdx < payload.events.length)) return null;
+
+    var refIdx = payload.books.indexOf(payload.reference_book);
+    if (refIdx < 0) return null;
+
+    var panelRows = [];
+    var i;
+    for (i = 0; i < payload.rows.length; i += 1) {
+      var row = payload.rows[i];
+      if (row[0] === eventIdx && row[2] === marketIdx) panelRows.push(row);
+    }
+
+    var refRow = null;
+    for (i = 0; i < panelRows.length; i += 1) {
+      if (panelRows[i][1] === refIdx) { refRow = panelRows[i]; break; }
+    }
+    if (refRow === null) return null;
+
+    var refQuote = BoardQuote.quote([refRow[3], refRow[4]]);
+    if (refQuote === null) return null;
+
+    function entry(row, quote) {
+      return {
+        book: payload.books[row[1]],
+        bookIndex: row[1],
+        isExchange: isExchange(payload.books[row[1]]),
+        line: row[5],
+        asof: payload.last_updates[row[6]],
+        prices: [row[3], row[4]],
+        implied: quote === null ? null : quote.implied,
+        overround: quote === null ? null : quote.overround,
+        hold: quote === null ? null : quote.hold,
+        fair: quote === null ? null : quote.fair,
+        // board.py:284 gives the reference a delta against ITSELF, which is exactly +0.0.
+        delta_pp: quote === null ? null : BoardQuote.deltaPp(quote.fair[0], refQuote.fair[0])
+      };
+    }
+
+    var reference = entry(refRow, refQuote);
+    var matched = [], offLine = [], exchanges = [], dropped = [];
+
+    for (i = 0; i < panelRows.length; i += 1) {
+      var r = panelRows[i];
+      if (r[1] === refIdx) continue;
+      var q = BoardQuote.quote([r[3], r[4]]);
+      if (q === null) { dropped.push(entry(r, null)); continue; }
+      var e = entry(r, q);
+      if (e.isExchange) {
+        // B4: a lay price is not a back price. Never mixed into dispersion.
+        exchanges.push(e);
+      } else if (e.line === reference.line) {
+        // Exact comparison, as board.py:305. A tolerance would mask the very thing B6 names.
+        matched.push(e);
+      } else {
+        // B6: different line, different bet. Never compared.
+        offLine.push(e);
+      }
+    }
+
+    matched.sort(byDistance);
+    exchanges.sort(byDistance);
+    offLine.sort(byLine);
+
+    return {
+      market: marketKey,
+      roles: payload.roles[marketKey],
+      event: payload.events[eventIdx],
+      referenceBook: payload.reference_book,
+      referenceLine: reference.line,
+      reference: reference,
+      matched: matched,
+      off_line: offLine,
+      exchanges: exchanges,
+      dropped: dropped
+    };
+  }
+
+  return {
+    EXCHANGES: EXCHANGES,
+    bucket: bucket
+  };
+})();
+
+</script>
+<script>
+/* realdata/closingline/gamma.js, inlined verbatim. Proposition 2's first-order bias
+ * coefficients, transcribed from verification/harness/gamma_analytical_wsb.py and pinned to
+ * it by tests/realdata/closingline/test_live_gamma_parity.py. */
+/* First-order devig bias coefficients — the browser-side port of Proposition 2.
+ *
+ * A LITERAL transcription of `verification/harness/gamma_analytical_wsb.py`, whose formulas
+ * are themselves transcribed from `docs/15_LAYER_5_FOUNDATIONS_CLV_FAIR_BET.md:182` and
+ * published as Proposition 2 of Stavsky, É. (2026), "Closing-Line Value as a Fair Bet, and
+ * the Devig Bias That Governs It".
+ *
+ * Each function returns the PER-STEP BIAS β = v · γ(p) at the focal outcome, not γ itself.
+ * The Python's own docstrings are explicit about that and the naming here follows it rather
+ * than improving on it, because a reader moving between the two files should not have to
+ * hold two conventions.
+ *
+ * NO PYTHON IMPORT, IN EITHER DIRECTION. `realdata/` may not import `verification/`
+ * (`tests/test_realdata_import_direction.py`, docs/31 §8), so this file transcribes and the
+ * TEST — which lives in `tests/` and may import anything — is what pins the transcription to
+ * the source. That is the same shape as `devig.js`: the artifact is standalone, the proof
+ * crosses the boundary.
+ *
+ * EXACTNESS, AND THE ONE EXCEPTION. Three of the four are +, -, * and / on binary64, which
+ * IEEE 754 requires to be correctly rounded, so they agree with the Python bit for bit and
+ * the test asserts exactly that. `power` calls `log`, which IEEE 754 does NOT require to be
+ * correctly rounded — the standard recommends it and does not mandate it — so no bit claim is
+ * available for it across two runtimes. The test states a tolerance for that one case, in
+ * ulps, as a decision with its measured basis. See `test_live_gamma_parity.py`.
+ *
+ * A bare script, no import/export, no dependency, no build step.
+ */
+
+var Gamma = (function () {
+  "use strict";
+
+  /* Matched method-truth: multiplicative devig on multiplicative truth. γ ≡ 0.
+   * `docs/15:182` — the hold cancels, so the bias is zero at ALL orders in v, not merely at
+   * first order. `gamma_analytical_wsb.py:31-41` returns zeros_like(v). */
+  function multiplicative(p, v) {
+    return 0.0 * v;
+  }
+
+  /* Additive on multiplicative truth, n = 2: β = v · (p − 1/n).
+   * `gamma_analytical_wsb.py:43-53`: `v * (p_focal - 0.5)`. */
+  function additive(p, v) {
+    return v * (p - 0.5);
+  }
+
+  /* Shin three-way on multiplicative truth, n = 3: β = v · (n·p − 1) / (2(n − 1)).
+   * `gamma_analytical_wsb.py:55-69`: `v * (3.0 * p_focal - 1.0) / 4.0`.
+   *
+   * Kept at n = 3 rather than generalised. The Python is n = 3 and the operation order is
+   * what the bit-equality claim rests on; a general form would be a different expression
+   * that happens to agree at n = 3, which is not the same thing. */
+  function shinThreeWay(p, v) {
+    return v * (3.0 * p - 1.0) / 4.0;
+  }
+
+  /* Power on multiplicative truth, n = 2: β = v · p · (1 + ln p / H(p)), with H the Shannon
+   * entropy of the true distribution. `gamma_analytical_wsb.py:71-87`.
+   *
+   * THE ONE FUNCTION WITHOUT A BIT CLAIM, and the reason is `Math.log`. Operation order is
+   * still preserved exactly, because that is what keeps the divergence to the transcendental
+   * rather than adding rounding of our own. */
+  function power(p, v) {
+    var pOther = 1.0 - p;
+    var h = -(p * Math.log(p) + pOther * Math.log(pOther));
+    return v * p * (1.0 + Math.log(p) / h);
+  }
+
+  /* The family, for the γ(p) panel. One curve per method; the registry names them. */
+  var METHODS = [
+    { key: "multiplicative", label: "multiplicative", fn: multiplicative,
+      note: "matched: zero at all orders" },
+    { key: "additive", label: "additive", fn: additive,
+      note: "zero crossing at p = 1/n" },
+    { key: "shin3", label: "Shin (n=3)", fn: shinThreeWay,
+      note: "zero crossing at p = 1/n" },
+    { key: "power", label: "power", fn: power,
+      note: "entropy-weighted" }
+  ];
+
+  return {
+    multiplicative: multiplicative,
+    additive: additive,
+    shinThreeWay: shinThreeWay,
+    power: power,
+    METHODS: METHODS
+  };
+})();
+
+</script>
+<script>
+  const SUPABASE_URL   = "https://eddbffgqmqwebpcsaewj.supabase.co";
+  const SUPABASE_KEY   = "sb_publishable_8Rp9NOSJPyKToxHQqFm4dQ_AlRRN81g";
+  const SUPABASE_TABLE = "snapshots";
+  const HISTORY_LIMIT  = 60;
+</script>
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  /* Rows are keyed by id, never by arrival order. The history fetch and the socket race
+   * on purpose — subscribing first and fetching second means a row landing mid-fetch is
+   * delivered twice rather than missed, and a map makes the duplicate free to absorb. */
+  const rows = new Map();
+  let highestId = 0;
+  let lastArrival = null;
+  let backfilling = false;
+  let gapsRefilled = 0;
+
+  /* ---------- REST: the same hand-rolled call shape the signup form uses ---------- */
+  function headers() {
+    return {
+      "apikey": SUPABASE_KEY,
+      "Authorization": "Bearer " + SUPABASE_KEY,
+      "Accept": "application/json"
+    };
+  }
+
+  function query(qs, wantCount) {
+    const h = headers();
+    if (wantCount) h["Prefer"] = "count=exact";
+    return fetch(SUPABASE_URL + "/rest/v1/" + SUPABASE_TABLE + "?" + qs, { headers: h })
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const range = r.headers.get("Content-Range");
+        // response.json() is a STRICT parser. A bare NaN throws here rather than
+        // reaching the page as a number, which is the whole of F19's difference.
+        return r.json().then((body) => ({ body: body, range: range }));
+      });
+  }
+
+  const SELECT = "select=id,captured_at,payload";
+
+  /* The row count in the table, from Content-Range. Held as a number rather than written
+   * straight to the DOM because it has to be ADVANCED on each live insert: leaving it at
+   * its load-time value would show a figure that is wrong within the minute and looks
+   * exactly like a figure that is right. Nothing deletes from this table — retention is
+   * unscheduled — so one insert is one row. */
+  let tableTotal = null;
+
+  function setTotal(range) {
+    if (!range) return;
+    const n = parseInt(range.split("/")[1], 10);
+    if (!isNaN(n)) tableTotal = n;
+  }
+
+  function loadHistory() {
+    return query(SELECT + "&order=captured_at.desc&limit=" + HISTORY_LIMIT, true)
+      .then((res) => {
+        res.body.forEach((r) => absorb(r, false));
+        setTotal(res.range);
+        render();
+      });
+  }
+
+  /* Re-query the gap rather than assume there wasn't one. A heartbeat proves the socket
+   * is open; it proves nothing about whether rows arrived while it was not.
+   *
+   * DESCENDING, and that is the whole of the long-outage case. A laptop asleep for two
+   * hours wakes to a gap of ~120 rows against a cap of 60. Ascending would return the
+   * SIXTY OLDEST rows of that gap, the cap would evict the rest, and the page would go
+   * green showing two-hour-old quotes with a live badge above them. Descending returns
+   * the newest, which is what the cap should be holding. A short gap is unaffected. */
+  function backfill(fromId) {
+    /* `fromId` is explicit because the caller is not always asking about the current high
+     * water mark. On an interior gap the arriving row has ALREADY been absorbed, so
+     * `highestId` has moved past the hole; querying from it returns nothing while the
+     * refill counter still increments, which is a fix that reports success and does
+     * nothing. The lower bound has to be the value from before the arrival. */
+    const from = (fromId === undefined) ? highestId : fromId;
+    if (backfilling || from === 0) return Promise.resolve();
+    backfilling = true;
+    return query(SELECT + "&id=gt." + from + "&order=id.desc&limit=" + HISTORY_LIMIT, true)
+      .then((res) => {
+        res.body.forEach((r) => absorb(r, true));
+        setTotal(res.range);
+        render();
+      })
+      .catch(() => {})
+      .then(() => { backfilling = false; });
+  }
+
+  function absorb(row, viaBackfill) {
+    if (rows.has(row.id)) return false;
+    const p = row.payload;
+    rows.set(row.id, {
+      id: row.id,
+      captured_at: row.captured_at,
+      // The payload itself, not only its shape. The 60-row cap is what bounds this: the
+      // page already downloaded these bytes, and the chart step reads back across them.
+      payload: p,
+      quotes: (p && p.rows) ? p.rows.length : 0,
+      books: (p && p.books) ? p.books.length : 0,
+      events: (p && p.events) ? p.events.length : 0,
+      bytes: JSON.stringify(p === undefined ? null : p).length,
+      backfilled: viaBackfill === true
+    });
+    if (row.id > highestId) highestId = row.id;
+    lastArrival = Date.now();
+    // The cap is what keeps an unbounded table from becoming an unbounded page.
+    if (rows.size > HISTORY_LIMIT) {
+      const oldest = Array.from(rows.keys()).sort((a, b) => a - b)[0];
+      rows.delete(oldest);
+    }
+    return true;
+  }
+
+  /* ---------- render: the status bar, then the chart application ----------
+   *
+   * The arrivals table is gone with the scroller. Its content survives where it belongs: the
+   * status bar carries rows held, the newest capture, and the refilled-gap count, which is
+   * the part a reader acts on. The per-row detail was a debugging surface for step (a) and
+   * kept nothing that the counters do not. */
+  function render() {
+    const list = Array.from(rows.values()).sort((a, b) => b.id - a.id);
+    $("held").textContent = String(list.length);
+    if (gapsRefilled > 0) {
+      $("gap-stat").hidden = false;
+      $("gaps").textContent = String(gapsRefilled);
+    }
+    $("newest").textContent = list.length
+      ? list[0].captured_at.slice(0, 19).replace("T", " ") : "\u2014";
+    if (!list.length) return;
+    renderPanel(list[0].payload);
+  }
+
+  /* ---------- decode and bucket: positional payload -> one panel ---------- */
+
+  /* Which (event, market) the panel shows. `let`, not `const`, and reachable through
+   * `__live.setPanel` below: the on-page selector is step (d), but the two states step (c)
+   * had to get right — a panel with off-line books, and one with nothing on the reference's
+   * line — do not occur at this default, and a rendering check that cannot reach them is a
+   * rendering check for one case. */
+  let PANEL_EVENT = 0;
+  let PANEL_MARKET = "h2h";
+
+  const NS = "http://www.w3.org/2000/svg";
+
+  /* Reconstruct one panel from the flat rows, WITHOUT bucketing. Kept because the flat view
+   * is what the decode's own proof is written against; the chart and the table run on
+   * `LiveBoard.bucket`, whose proof is separate. Four index resolutions and two prices:
+   *
+   *   books[r[1]]  markets[r[2]]  roles[market]  events[r[0]]  last_updates[r[6]]
+   *   prices = [r[3], r[4]]   line = r[5]
+   */
+  function decodePanel(p, eventIdx, marketKey) {
+    if (!p || !p.markets || !p.rows) return null;
+    const marketIdx = p.markets.indexOf(marketKey);
+    if (marketIdx < 0 || eventIdx < 0 || eventIdx >= p.events.length) return null;
+    const roles = p.roles[marketKey];
+    const refIdx = p.books.indexOf(p.reference_book);
+    const refRow = p.rows.find(
+      (r) => r[0] === eventIdx && r[2] === marketIdx && r[1] === refIdx
+    );
+    const quotes = [];
+    for (let i = 0; i < p.rows.length; i += 1) {
+      const r = p.rows[i];
+      if (r[0] !== eventIdx || r[2] !== marketIdx) continue;
+      quotes.push({
+        book: p.books[r[1]],
+        isReference: r[1] === refIdx,
+        // Exact comparison, matching board.py: a tolerance would mask two books quoted on
+        // genuinely different lines, which is the thing worth seeing.
+        offLine: refRow ? r[5] !== refRow[5] : false,
+        line: r[5],
+        asof: p.last_updates[r[6]],
+        prices: [r[3], r[4]],
+        quote: BoardQuote.quote([r[3], r[4]])
+      });
+    }
+    return {
+      market: marketKey, roles: roles, event: p.events[eventIdx],
+      referenceBook: p.reference_book, referenceLine: refRow ? refRow[5] : null,
+      quotes: quotes
+    };
+  }
+
+  /* =====================================================================
+   * SELECTION — one state, shared by every pane. charting-spec.md §1.
+   * `highlight()` toggles classes and nothing else; it never creates, removes or reorders a
+   * node. Marks are indexed as they are created, and listeners are delegated to containers
+   * that outlive every redraw.
+   * ===================================================================== */
+
+  let selected = null;
+  let locked = null;
+  const markIndex = {};
+
+  function registerMark(book, el) {
+    el.setAttribute("data-book", book);
+    (markIndex[book] || (markIndex[book] = [])).push(el);
+    return el;
+  }
+
+  function clearMarks(predicate) {
+    for (const book in markIndex) {
+      markIndex[book] = markIndex[book].filter(function (el) { return !predicate(el); });
+      if (!markIndex[book].length) delete markIndex[book];
+    }
+  }
+
+  function highlight() {
+    for (const book in markIndex) {
+      const isSel = book === selected;
+      const els = markIndex[book];
+      for (let i = 0; i < els.length; i += 1) {
+        els[i].classList.toggle("is-sel", isSel);
+        els[i].classList.toggle("is-dim", selected !== null && !isSel);
+      }
+    }
+    drawLegend();
+  }
+
+  function referenceBook() {
+    const b = currentBoard();
+    return b ? b.referenceBook : null;
+  }
+
+  function pick(book, lock) {
+    if (!book) return;
+    if (lock) locked = (locked === book) ? referenceBook() : book;
+    selected = lock ? locked : book;
+    highlight();
+  }
+
+  function bookOf(node) {
+    let el = node;
+    while (el && el.getAttribute) {
+      const b = el.getAttribute("data-book");
+      if (b) return b;
+      el = el.parentNode;
+    }
+    return null;
+  }
+
+  function bindSelection(el) {
+    if (!el) return;
+    el.addEventListener("pointerover", function (e) {
+      const b = bookOf(e.target);
+      if (b) pick(b, false);
+    });
+    el.addEventListener("pointerleave", function () {
+      selected = locked;
+      hideCrosshair();
+      highlight();
+    });
+    el.addEventListener("click", function (e) {
+      const b = bookOf(e.target);
+      if (b) pick(b, true);
+    });
+  }
+
+  /* =====================================================================
+   * THE REGISTRY — charting-spec.md §5, with the compute functions §5 requires.
+   *
+   * F33: every ready entry now declares HOW it is computed, rather than a comment saying so
+   * while the computation lived in a renderer keyed by string. A BOOK entry returns points,
+   * one per book, in a shape a generic pane can draw. A STANDALONE entry draws itself into a
+   * frame. Nothing dispatches on a key.
+   *
+   * F32: `mustSeries` raises on a key the registry does not hold. The old per-book renderer
+   * ended in a bare `else`, so an unknown key silently rendered β — fail-open, latent while
+   * the keys were fixed, and reachable the moment a pane became a runtime choice, which is
+   * this step.
+   *
+   * `family` decides the architecture: BOOK series share a rank axis and stack; STANDALONE
+   * takes the whole stage; TIME shares a time axis and is not rendered yet.
+   * ===================================================================== */
+
+  const FAM = { BOOK: "book", SOLO: "standalone", TIME: "time" };
+  const READY = "ready";
+  const DEFERRED = "deferred";
+
+  function bookPoints(board, valueOf, opts) {
+    const out = [];
+    everyQuote(board).forEach(function (q) {
+      if (q.fair === null) return;
+      const v = valueOf(q);
+      out.push({
+        book: q.book, y: v.y, y2: (v.y2 === undefined ? null : v.y2),
+        withheld: v.withheld === true, isRef: q.book === board.referenceBook,
+        isExchange: q.isExchange, hold: q.hold, fair: q.fair[0]
+      });
+    });
+    return {
+      form: opts.form, unit: opts.unit, zero: opts.zero === true,
+      fmt: opts.fmt, points: out
+    };
+  }
+
+  /* A TIME series is one line per book across the snapshots held, or one line total. Both
+   * shapes come out of here, so the five computes below differ only in the number they pull
+   * off a quote. */
+  function lineSeries(valueOf, opts) {
+    const frames = timeFrames();
+    const byBook = {};
+    frames.forEach(function (fr, i) {
+      everyQuote(fr.board).forEach(function (q) {
+        if (q.fair === null) return;
+        const v = valueOf(q, fr, i);
+        if (v === null || v === undefined || !isFinite(v)) return;
+        (byBook[q.book] = byBook[q.book] || []).push({ i: i, y: v });
+      });
+    });
+    const lines = [];
+    for (const book in byBook) {
+      if (byBook[book].length >= 2) lines.push({ book: book, points: byBook[book] });
+    }
+    return { form: "line", unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
+             lines: lines,
+             points: lines.reduce(function (a, ln) { return a.concat(ln.points); }, []) };
+  }
+
+  function aggregateSeries(reduce, opts) {
+    const frames = timeFrames();
+    const pts = [];
+    frames.forEach(function (fr, i) {
+      const v = reduce(fr.board);
+      if (v !== null && isFinite(v)) pts.push({ i: i, y: v });
+    });
+    return { form: "line", unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
+             lines: pts.length >= 2 ? [{ book: opts.label, points: pts }] : [],
+             points: pts };
+  }
+
+  const REGISTRY = [
+    /* ---- BOOK: one mark per book, on the shared rank axis ---- */
+    { key: "hold_strip", label: "hold by book", family: FAM.BOOK, form: "dot",
+      quantity: "hold", unit: "%", axis: "book rank", status: READY,
+      note: "wide range makes a strip clearer than bars",
+      compute: function (b) {
+        return bookPoints(b, function (q) { return { y: q.hold }; },
+                          { form: "dot", unit: "%", fmt: pct });
+      } },
+
+    { key: "fair_pi", label: "fair π", family: FAM.BOOK, form: "dot",
+      quantity: "probability", unit: "%", axis: "book rank", status: READY,
+      note: "the devigged probability each book implies for side A",
+      compute: function (b) {
+        return bookPoints(b, function (q) { return { y: q.fair[0] }; },
+                          { form: "dot", unit: "%", fmt: pct });
+      } },
+
+    { key: "delta_ref", label: "Δ vs reference", family: FAM.BOOK, form: "bar",
+      quantity: "deviation", unit: "pp", axis: "book rank", status: READY,
+      note: "withheld where a comparison would cross a line (B6) or a lay price (B4)",
+      compute: function (b) {
+        return bookPoints(b, function (q) {
+          const ok = comparable(b, q.book);
+          return { y: ok ? q.delta_pp : 0, withheld: !ok };
+        }, { form: "bar", unit: "pp", zero: true, fmt: signed2 });
+      } },
+
+    { key: "overround", label: "overround", family: FAM.BOOK, form: "bar",
+      quantity: "overround", unit: "×", axis: "book rank", status: READY,
+      note: "the vig made physical rather than stated",
+      compute: function (b) {
+        return bookPoints(b, function (q) { return { y: q.overround - 1.0 }; },
+                          { form: "bar", unit: "×", zero: true, fmt: pctRaw });
+      } },
+
+    { key: "dumbbell", label: "offered vs fair", family: FAM.BOOK, form: "dumbbell",
+      quantity: "probability", unit: "%", axis: "book rank", status: READY,
+      note: "offered implied against devigged fair, per book",
+      compute: function (b) {
+        return bookPoints(b, function (q) {
+          return { y: q.fair[0], y2: q.implied[0] };
+        }, { form: "dumbbell", unit: "%", fmt: pct });
+      } },
+
+    { key: "beta", label: "β = v·γ per book", family: FAM.BOOK, form: "bar",
+      quantity: "first-order bias", unit: "pp", axis: "book rank", status: READY,
+      note: "Proposition 2, evaluated at each book's own hold and fair probability",
+      compute: function (b) {
+        return bookPoints(b, function (q) {
+          return { y: Gamma.additive(q.fair[0], q.hold) * 100.0 };
+        }, { form: "bar", unit: "pp", zero: true, fmt: signed2 });
+      } },
+
+    /* ---- STANDALONE: the x is genuinely something else, so the panel is whole ---- */
+    { key: "slope", label: "implied → fair", family: FAM.SOLO,
+      quantity: "probability", unit: "pp", axis: "two-axis slope", status: READY,
+      note: "the devig transform, working", draw: drawSlope },
+
+    { key: "hold_dev", label: "hold vs deviation", family: FAM.SOLO,
+      quantity: "hold", unit: "%", axis: "hold", status: READY,
+      note: "asks whether margin predicts bias; the shape of the cloud is the content, " +
+            "which rank-ordering the x would destroy",
+      draw: drawScatter },
+
+    { key: "gamma", label: "γ(p) family", family: FAM.SOLO,
+      quantity: "first-order bias", unit: "pp", axis: "probability", status: READY,
+      note: "Proposition 2; one curve per devig method, zero crossing at p = 1/n",
+      draw: drawAnalytic },
+
+    { key: "regime", label: "regime map", family: FAM.SOLO,
+      quantity: "|β|", unit: "pp", axis: "surface", status: READY,
+      note: "analytical surface with data overlaid", draw: drawRegime },
+
+    /* ---- TIME: same architecture, time on the shared axis. Not rendered this step. ---- */
+    { key: "dispersion_t", label: "dispersion width", family: FAM.TIME, form: "line",
+      quantity: "spread", unit: "pp", axis: "time", status: READY,
+      note: "aggregates across books, so it moves when individuals do not",
+      compute: function () {
+        return aggregateSeries(function (b) {
+          const qs = chartable(b);
+          if (qs.length < 2) return null;
+          let lo = Infinity, hi = -Infinity;
+          qs.forEach(function (q) {
+            if (q.fair[0] < lo) lo = q.fair[0];
+            if (q.fair[0] > hi) hi = q.fair[0];
+          });
+          return (hi - lo) * 100.0;
+        }, { unit: "pp", label: "dispersion", fmt: signed2 });
+      } },
+    { key: "hold_t", label: "hold per book", family: FAM.TIME, form: "line",
+      quantity: "hold", unit: "%", axis: "time", status: READY,
+      note: "the reference should sit flat and low; the contrast is the point",
+      compute: function () {
+        return lineSeries(function (q) { return q.hold; }, { unit: "%", fmt: pct });
+      } },
+    { key: "price_t", label: "price path per book", family: FAM.TIME, form: "line",
+      quantity: "price", unit: "dec", axis: "time", status: READY,
+      note: "side A's offered decimal price, per book",
+      compute: function () {
+        return lineSeries(function (q) { return q.prices[0]; },
+                          { unit: "dec", fmt: function (v) { return num(v, 3); } });
+      } },
+    { key: "freshness", label: "freshness", family: FAM.TIME, form: "cells",
+      quantity: "staleness", unit: "s", axis: "time", status: READY,
+      note: "books × time by last_update recency; busy even when prices are static",
+      compute: function () {
+        const frames = timeFrames();
+        const books = [];
+        const cells = [];
+        let worst = 1;
+        frames.forEach(function (fr, i) {
+          everyQuote(fr.board).forEach(function (q) {
+            if (q.fair === null || !q.asof) return;
+            if (books.indexOf(q.book) === -1) books.push(q.book);
+            const age = (Date.parse(fr.at) - Date.parse(q.asof)) / 1000.0;
+            if (!isFinite(age) || age < 0) return;
+            if (age > worst) worst = age;
+            cells.push({ book: q.book, i: i, age: age });
+          });
+        });
+        books.sort();
+        cells.forEach(function (c) { c.v = Math.min(c.age / worst, 1) * 0.85 + 0.05; });
+        return { form: "cells", unit: "s", books: books, cells: cells,
+                 fmt: function (v) { return num(v, 0) + "s"; },
+                 points: cells.map(function (c) { return { i: c.i, y: c.age }; }) };
+      } },
+    { key: "dv", label: "Δv per interval", family: FAM.TIME, form: "line",
+      quantity: "hold change", unit: "pp", axis: "time", status: READY,
+      note: "the per-interval change in each book's hold",
+      compute: function () {
+        const frames = timeFrames();
+        const prev = {};
+        const byBook = {};
+        frames.forEach(function (fr, i) {
+          everyQuote(fr.board).forEach(function (q) {
+            if (q.fair === null) return;
+            if (prev[q.book] !== undefined) {
+              (byBook[q.book] = byBook[q.book] || []).push(
+                { i: i, y: (q.hold - prev[q.book]) * 100.0 });
+            }
+            prev[q.book] = q.hold;
+          });
+        });
+        const lines = [];
+        for (const book in byBook) {
+          if (byBook[book].length >= 2) lines.push({ book: book, points: byBook[book] });
+        }
+        return { form: "line", unit: "pp", zero: true, fmt: signed2, lines: lines,
+                 points: lines.reduce(function (a, ln) { return a.concat(ln.points); }, []) };
+      } },
+    { key: "cum_dv", label: "cumulative Σ Δv", family: FAM.TIME, form: "line",
+      quantity: "telescoping", unit: "pp", axis: "time", status: DEFERRED,
+      why: "awaiting hours of history", note: "the telescoping condition" },
+    { key: "lead_lag", label: "lead-lag", family: FAM.TIME, form: "matrix",
+      quantity: "cross-correlation", unit: "s", axis: "time", status: DEFERRED,
+      why: "awaiting hours of history", note: "between books" }
+  ];
+
+  /* F32: fail closed. A key the registry does not hold is a programming error, and the
+   * honest response to one is a refusal rather than a plausible chart. */
+  function mustSeries(key) {
+    for (let i = 0; i < REGISTRY.length; i += 1) {
+      if (REGISTRY[i].key === key) return REGISTRY[i];
+    }
+    throw new Error("unknown series key: " + key);
+  }
+  function hasSeries(key) {
+    for (let i = 0; i < REGISTRY.length; i += 1) if (REGISTRY[i].key === key) return true;
+    return false;
+  }
+
+  /* ---- what the terminal is showing ---- */
+  let mode = FAM.BOOK;
+  let soloKey = null;
+  /* The remembered BOOK arrangement. Plain state, so a STANDALONE round trip cannot disturb
+   * it: switching away reads nothing from here and switching back writes nothing to it. */
+  let bookPanes = ["hold_strip", "delta_ref", "overround"];
+  /* The TIME arrangement is remembered separately, for the same reason the BOOK one is: a
+   * visit to another family must not disturb it. */
+  let timePanes = ["dispersion_t", "hold_t"];
+  let sortKey = "hold";
+
+  /* Which arrangement is on screen. BOOK and TIME are two remembered pane lists over one
+   * pane machinery; the family decides which list, and nothing downstream branches on it. */
+  function activePanes() {
+    return mode === FAM.TIME ? timePanes : bookPanes;
+  }
+
+  /* =====================================================================
+   * LAYOUT — one viewport, panes divide it. §4, extended.
+   * ===================================================================== */
+
+  const NS_SVG = NS;
+  let W = 1000, H = 520;
+
+  function mk(parent, tag, attrs, text) {
+    const el = document.createElementNS(NS_SVG, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    if (text !== undefined) el.textContent = text;
+    parent.appendChild(el);
+    return el;
+  }
+
+  /* The viewBox is set to the measured pixel box, so one user unit is one CSS pixel and a
+   * pane's share of the height is arithmetic rather than guesswork. */
+  function measure() {
+    const svg = $("stage");
+    const r = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    W = Math.max(640, Math.round((r && r.width) || 1000));
+    H = Math.max(240, Math.round((r && r.height) || 520));
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  }
+
+  const PAD_L = 148, PAD_R = 74, AXIS_H = 26, PANE_GAP = 8;
+
+  function extent(values) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < values.length; i += 1) {
+      if (values[i] < lo) lo = values[i];
+      if (values[i] > hi) hi = values[i];
+    }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    return [lo, hi];
+  }
+
+  function linear(values, lo_px, hi_px) {
+    const e = extent(values);
+    const pad = Math.max((e[1] - e[0]) * 0.18, 1e-6);
+    const lo = e[0] - pad, hi = e[1] + pad;
+    const span = hi - lo;
+    const f = function (v) { return lo_px + ((v - lo) / span) * (hi_px - lo_px); };
+    f.lo = lo; f.hi = hi;
+    return f;
+  }
+
+  const pct = function (v) { return typeof v === "number" ? (v * 100).toFixed(2) + "%" : "—"; };
+  const pctRaw = function (v) { return typeof v === "number" ? v.toFixed(4) : "—"; };
+  const signed2 = function (v) {
+    return typeof v === "number" ? (v > 0 ? "+" : "") + v.toFixed(2) : "—";
+  };
+  const num = function (v, n) { return typeof v === "number" ? v.toFixed(n) : "—"; };
+
+  let boardNow = null;
+  function currentBoard() { return boardNow; }
+  function chartable(board) { return board ? [board.reference].concat(board.matched) : []; }
+  function everyQuote(board) {
+    return board
+      ? [board.reference].concat(board.matched, board.off_line, board.exchanges, board.dropped)
+      : [];
+  }
+  function quoteFor(board, book) {
+    const all = everyQuote(board);
+    for (let i = 0; i < all.length; i += 1) if (all[i].book === book) return all[i];
+    return null;
+  }
+  function bucketOf(board, book) {
+    if (!board) return null;
+    if (board.reference.book === book) return "reference";
+    const named = ["matched", "off_line", "exchanges", "dropped"];
+    for (let n = 0; n < named.length; n += 1) {
+      const g = board[named[n]];
+      for (let i = 0; i < g.length; i += 1) if (g[i].book === book) return named[n];
+    }
+    return null;
+  }
+  function comparable(board, book) {
+    const k = bucketOf(board, book);
+    return k === "reference" || k === "matched";
+  }
+
+  /* =====================================================================
+   * THE BOOK AXIS — rank, identical in every pane.
+   *
+   * That identity is the whole reason one straight crosshair can cross panes whose y
+   * quantities differ. The order is a control, and changing it reorders every pane at once
+   * because every pane reads the same `rankOf`.
+   * ===================================================================== */
+
+  /* THE SHARED AXIS IS A DOMAIN, not a book list.
+   *
+   * BOOK ranks books; TIME ranks the snapshots held. Everything downstream — the crosshair,
+   * the pane frames, `xOfIndex` — reads `domain` and `indexOf` and does not know which it is
+   * looking at. That was the claim the registry's `axis` field was making all along, and
+   * this is where it either holds or does not.
+   *
+   * `bookOrder` and `rankOf` remain as the BOOK-family names because the sort control and
+   * the book computes are written in those terms; in TIME mode they are simply the
+   * snapshots. */
+  let bookOrder = [];
+  let rankOf = {};
+  let domainKind = FAM.BOOK;
+
+  /* ---- TIME: the snapshots held, bucketed once per (event, market, id set) ---- */
+  let timeCache = null;
+
+  function timeFrames() {
+    const list = Array.from(rows.values()).sort(function (a, b) { return a.id - b.id; });
+    const key = PANEL_EVENT + "|" + PANEL_MARKET + "|" +
+                list.map(function (r) { return r.id; }).join(",");
+    if (timeCache && timeCache.key === key) return timeCache.frames;
+    const frames = [];
+    list.forEach(function (r) {
+      const b = LiveBoard.bucket(r.payload, PANEL_EVENT, PANEL_MARKET);
+      if (b) frames.push({ id: r.id, at: r.captured_at, board: b });
+    });
+    /* Keyed on the id SET, which is what decides whether these frames are still the right
+     * frames — not on anything that reshuffles when the prices move. F34. */
+    timeCache = { key: key, frames: frames };
+    return frames;
+  }
+
+  function sortBooks(board) {
+    if (domainKind === FAM.TIME) {
+      const frames = timeFrames();
+      bookOrder = frames.map(function (f) { return String(f.id); });
+      rankOf = {};
+      bookOrder.forEach(function (k, i) { rankOf[k] = i; });
+      return;
+    }
+    const qs = everyQuote(board).filter(function (q) { return q.fair !== null; });
+    const cmp = {
+      hold: function (a, b) { return a.hold - b.hold || (a.book < b.book ? -1 : 1); },
+      fair: function (a, b) { return a.fair[0] - b.fair[0] || (a.book < b.book ? -1 : 1); },
+      name: function (a, b) { return a.book < b.book ? -1 : (a.book > b.book ? 1 : 0); }
+    }[sortKey];
+    qs.sort(cmp);
+    bookOrder = qs.map(function (q) { return q.book; });
+    rankOf = {};
+    bookOrder.forEach(function (b, i) { rankOf[b] = i; });
+  }
+
+  function xOfIndex(rank) {
+    const n = Math.max(bookOrder.length, 1);
+    return PAD_L + ((rank + 0.5) / n) * (W - PAD_L - PAD_R);
+  }
+
+  /* =====================================================================
+   * BOOK PANES — created once per series, MOVED on reorder, never rebuilt.
+   *
+   * Reordering calls appendChild on an existing <g>, which moves it. Adding a pane creates
+   * one and leaves the others untouched. F28 and F30 are why that matters and why the test
+   * keys on the object rather than on a count or a position.
+   * ===================================================================== */
+
+  const paneNodes = {};
+  let crossNodes = null;
+
+  function paneFrame(i, n) {
+    const usable = H - AXIS_H - 6;
+    const each = (usable - (n - 1) * PANE_GAP) / n;
+    const top = 4 + i * (each + PANE_GAP);
+    return { top: top, bot: top + each, h: each };
+  }
+
+  function ensurePane(key) {
+    if (paneNodes[key]) return paneNodes[key];
+    const sdef = mustSeries(key);
+    const g = mk($("stage"), "g", { class: "pane", "data-pane": key });
+    const node = {
+      g: g, key: key, sdef: sdef,
+      base: mk(g, "line", { class: "axis" }),
+      zero: mk(g, "line", { class: "zero", visibility: "hidden" }),
+      lk: mk(g, "text", { class: "legend-k" }, sdef.label.toUpperCase()),
+      lv: mk(g, "text", { class: "legend-v" }, ""),
+      hi: mk(g, "text", { class: "tick", "text-anchor": "start" }, ""),
+      lo: mk(g, "text", { class: "tick", "text-anchor": "start" }, ""),
+      up: mk(g, "text", { class: "pane-btn", "data-move": "up:" + key }, "▲"),
+      down: mk(g, "text", { class: "pane-btn", "data-move": "down:" + key }, "▼"),
+      close: mk(g, "text", { class: "pane-btn", "data-move": "off:" + key }, "✕"),
+      marks: {}
+    };
+    paneNodes[key] = node;
+    return node;
+  }
+
+  function paneMark(node, book) {
+    if (node.marks[book]) return node.marks[book];
+    const g = node.g;
+    const m = {
+      dot: registerMark(book, mk(g, "circle", { cx: 0, cy: 0, r: 4, class: "dot" })),
+      dot2: registerMark(book, mk(g, "circle", { cx: 0, cy: 0, r: 4, class: "dot" })),
+      link: registerMark(book, mk(g, "line", { class: "link" })),
+      bar: registerMark(book, mk(g, "rect", { x: 0, y: 0, width: 0, height: 7, class: "bar" })),
+      hit: registerMark(book, mk(g, "rect", { class: "hit-col" }))
+    };
+    for (const k in m) m[k].__pane = node.key;
+    node.marks[book] = m;
+    return m;
+  }
+
+  function drawBookMode(board) {
+    const stage = $("stage");
+    sortBooks(board);
+    /* Drop panes that are no longer shown. Everything else keeps its nodes. */
+    for (const key in paneNodes) {
+      if (activePanes().indexOf(key) === -1) {
+        const n = paneNodes[key];
+        if (n.g.parentNode) n.g.parentNode.removeChild(n.g);
+        clearMarks(function (el) { return el.__pane === key; });
+        delete paneNodes[key];
+      }
+    }
+    /* Create or MOVE, in the order the reader chose. appendChild on an existing element is a
+     * move: the node survives, which is the property the test keys on. */
+    activePanes().forEach(function (key) {
+      const node = ensurePane(key);
+      stage.appendChild(node.g);
+    });
+    if (!crossNodes) {
+      crossNodes = {
+        line: mk(stage, "line", { class: "crosshair", visibility: "hidden" }),
+        bg: mk(stage, "rect", { class: "badge-bg", height: 16, visibility: "hidden" }),
+        tx: mk(stage, "text", { class: "badge-tx", "text-anchor": "middle",
+                                visibility: "hidden" }, "")
+      };
+    } else {
+      stage.appendChild(crossNodes.line);
+      stage.appendChild(crossNodes.bg);
+      stage.appendChild(crossNodes.tx);
+    }
+    updateBookMode(board);
+  }
+
+  function updateBookMode(board) {
+    const n = activePanes().length;
+    activePanes().forEach(function (key, i) {
+      const node = paneNodes[key];
+      const f = paneFrame(i, n);
+      const series = node.sdef.compute(board);
+      node.frame = f;
+      node.series = series;
+
+      const ys = series.points.map(function (pt) { return pt.y; });
+      if (series.zero) ys.push(0);
+      const y = linear(ys, f.bot - 10, f.top + 22);
+      node.y = y;
+
+      node.base.setAttribute("x1", PAD_L); node.base.setAttribute("x2", W - PAD_R);
+      node.base.setAttribute("y1", f.bot); node.base.setAttribute("y2", f.bot);
+      if (series.zero) {
+        node.zero.setAttribute("visibility", "visible");
+        node.zero.setAttribute("x1", PAD_L); node.zero.setAttribute("x2", W - PAD_R);
+        node.zero.setAttribute("y1", y(0)); node.zero.setAttribute("y2", y(0));
+      } else {
+        node.zero.setAttribute("visibility", "hidden");
+      }
+      node.lk.setAttribute("x", 4); node.lk.setAttribute("y", f.top + 12);
+      node.lv.setAttribute("x", 4); node.lv.setAttribute("y", f.top + 28);
+      node.hi.setAttribute("x", W - PAD_R + 10); node.hi.setAttribute("y", f.top + 26);
+      node.lo.setAttribute("x", W - PAD_R + 10); node.lo.setAttribute("y", f.bot);
+      node.hi.textContent = series.fmt(y.hi);
+      node.lo.textContent = series.fmt(y.lo);
+      node.up.setAttribute("x", W - 26); node.up.setAttribute("y", f.top + 12);
+      node.down.setAttribute("x", W - 26); node.down.setAttribute("y", f.top + 26);
+      node.close.setAttribute("x", W - 26); node.close.setAttribute("y", f.top + 40);
+      node.close.setAttribute("visibility", n > 1 ? "visible" : "hidden");
+
+      /* A TIME series is not one mark per domain member: it is one PATH per book across
+       * every member, or a grid of cells. That is a new mark FORM, which the registry's
+       * `form` field already declared — "line", "heatmap" — and it is the one structural
+       * addition the time family needed. The axis, the crosshair, the sort control, the
+       * pane frames and the selection all took the new domain unchanged. */
+      if (series.form === "line") {
+        drawLinePane(node, series, y);
+        return;
+      }
+      if (series.form === "cells") {
+        drawCellPane(node, series, f);
+        return;
+      }
+
+      const seen = {};
+      series.points.forEach(function (pt) {
+        seen[pt.book] = true;
+        const m = paneMark(node, pt.book);
+        const x = xOfIndex(rankOf[pt.book]);
+        const show = function (el, on) {
+          el.setAttribute("visibility", on ? "visible" : "hidden");
+        };
+        m.hit.setAttribute("x", x - 6); m.hit.setAttribute("y", f.top);
+        m.hit.setAttribute("width", 12); m.hit.setAttribute("height", f.h);
+        if (series.form === "line" || series.form === "cells") {
+          /* handled outside the per-point loop */
+        } else if (series.form === "bar") {
+          show(m.bar, !pt.withheld); show(m.dot, false); show(m.dot2, false);
+          show(m.link, false);
+          const y0 = y(0), y1 = y(pt.y);
+          m.bar.setAttribute("x", x - 3.5);
+          m.bar.setAttribute("width", 7);
+          m.bar.setAttribute("y", Math.min(y0, y1));
+          m.bar.setAttribute("height", Math.max(Math.abs(y1 - y0), 1));
+        } else if (series.form === "dumbbell") {
+          show(m.bar, false); show(m.dot, true); show(m.dot2, true); show(m.link, true);
+          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(pt.y));
+          m.dot2.setAttribute("cx", x); m.dot2.setAttribute("cy", y(pt.y2));
+          m.link.setAttribute("x1", x); m.link.setAttribute("x2", x);
+          m.link.setAttribute("y1", y(pt.y)); m.link.setAttribute("y2", y(pt.y2));
+        } else {
+          show(m.bar, false); show(m.dot, true); show(m.dot2, false); show(m.link, false);
+          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(pt.y));
+        }
+      });
+      for (const book in node.marks) {
+        if (!seen[book]) {
+          const m = node.marks[book];
+          for (const k in m) m[k].setAttribute("visibility", "hidden");
+        }
+      }
+    });
+    drawBookAxis();
+    drawLegend();
+  }
+
+  /* One path per series, keyed by book, `d` reassigned on arrival. The nodes are created
+   * once, exactly like the per-member marks, so an arriving row moves geometry and replaces
+   * nothing. */
+  function drawLinePane(node, series, y) {
+    const seen = {};
+    series.lines.forEach(function (ln) {
+      seen[ln.book] = true;
+      let m = node.marks[ln.book];
+      if (!m || !m.path) {
+        m = node.marks[ln.book] = m || {};
+        m.path = registerMark(ln.book, mk(node.g, "path", { d: "", class: "mark" }));
+        m.hit = registerMark(ln.book, mk(node.g, "path", { d: "", class: "hit" }));
+        m.path.__pane = node.key; m.hit.__pane = node.key;
+      }
+      let d = "";
+      ln.points.forEach(function (pt, i) {
+        d += (i ? " L " : "M ") + xOfIndex(pt.i) + " " + y(pt.y);
+      });
+      m.path.setAttribute("d", d);
+      m.hit.setAttribute("d", d);
+      m.path.setAttribute("visibility", "visible");
+      m.hit.setAttribute("visibility", "visible");
+    });
+    for (const book in node.marks) {
+      if (!seen[book]) {
+        const m = node.marks[book];
+        for (const k in m) if (m[k].setAttribute) m[k].setAttribute("visibility", "hidden");
+      }
+    }
+  }
+
+  /* books × domain, one rect each. The heatmap form. */
+  function drawCellPane(node, series, f) {
+    const books = series.books;
+    const rowH = (f.bot - f.top - 20) / Math.max(books.length, 1);
+    const cw = (W - PAD_L - PAD_R) / Math.max(bookOrder.length, 1);
+    series.cells.forEach(function (c) {
+      const key = c.book + "@" + c.i;
+      let m = node.marks[key];
+      if (!m) {
+        m = node.marks[key] = { rect: registerMark(c.book, mk(node.g, "rect",
+          { class: "cell", width: cw + 0.5, height: rowH + 0.5 })) };
+        m.rect.__pane = node.key;
+      }
+      m.rect.setAttribute("x", xOfIndex(c.i) - cw / 2);
+      m.rect.setAttribute("y", f.top + 16 + books.indexOf(c.book) * rowH);
+      m.rect.setAttribute("fill", "var(--margin)");
+      m.rect.setAttribute("fill-opacity", c.v.toFixed(4));
+    });
+  }
+
+  let axisNodes = null;
+  function drawBookAxis() {
+    const stage = $("stage");
+    if (!axisNodes) {
+      axisNodes = { label: mk(stage, "text", { class: "ax-label" }, ""), ticks: [] };
+    }
+    /* The label sits in the left gutter, which the ticks never enter, and says only what
+     * will fit there. The count moved to the toolbar's mode note: the first version ran the
+     * full sentence across the tick row and the two overlapped into nonsense, which is §3's
+     * legibility rule failing in the one place the page states its own axis. */
+    axisNodes.label.setAttribute("x", 4);
+    axisNodes.label.setAttribute("y", H - 8);
+    axisNodes.label.textContent = domainKind === FAM.TIME
+      ? "OVER TIME" : "BY " + sortKey.toUpperCase();
+    while (axisNodes.ticks.length < bookOrder.length) {
+      axisNodes.ticks.push(mk(stage, "text", { class: "tick", "text-anchor": "middle" }, ""));
+    }
+    axisNodes.ticks.forEach(function (t, i) {
+      if (i >= bookOrder.length) { t.setAttribute("visibility", "hidden"); return; }
+      t.setAttribute("visibility", "visible");
+      t.setAttribute("x", xOfIndex(i));
+      t.setAttribute("y", H - 8);
+      /* In TIME the tick is a clock reading, and only every fifth is drawn so sixty of them
+       * do not overlap into the illegibility §3 exists to prevent. */
+      if (domainKind === FAM.TIME) {
+        const frames = timeFrames();
+        const fr = frames[i];
+        t.textContent = (fr && (i % 5 === 0 || i === bookOrder.length - 1))
+          ? fr.at.slice(11, 16) : "";
+      } else {
+        t.textContent = String(i + 1);
+      }
+    });
+  }
+
+  /* One crosshair, one x, every pane. It snaps to a book's rank rather than following the
+   * pointer, so the line always sits on a datum. */
+  function crosshairAt(vx) {
+    if (mode === FAM.SOLO || !bookOrder.length || !crossNodes) return null;
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < bookOrder.length; i += 1) {
+      const d = Math.abs(xOfIndex(i) - vx);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    const book = bookOrder[best];
+    const px = xOfIndex(best);
+    crossNodes.line.setAttribute("x1", px); crossNodes.line.setAttribute("x2", px);
+    crossNodes.line.setAttribute("y1", 0); crossNodes.line.setAttribute("y2", H - AXIS_H);
+    crossNodes.line.setAttribute("visibility", "visible");
+    crossNodes.bg.setAttribute("x", px - 44); crossNodes.bg.setAttribute("y", H - AXIS_H + 2);
+    crossNodes.bg.setAttribute("width", 88);
+    crossNodes.bg.setAttribute("visibility", "visible");
+    crossNodes.tx.setAttribute("x", px); crossNodes.tx.setAttribute("y", H - AXIS_H + 14);
+    crossNodes.tx.setAttribute("visibility", "visible");
+    if (domainKind === FAM.TIME) {
+      const fr = timeFrames()[best];
+      crossNodes.tx.textContent = fr ? fr.at.slice(11, 19) : book;
+    } else {
+      crossNodes.tx.textContent = book;
+    }
+    if (domainKind !== FAM.TIME) pick(book, false);
+    return book;
+  }
+
+  function hideCrosshair() {
+    if (!crossNodes) return;
+    crossNodes.line.setAttribute("visibility", "hidden");
+    crossNodes.bg.setAttribute("visibility", "hidden");
+    crossNodes.tx.setAttribute("visibility", "hidden");
+  }
+
+  /* §4: the legend lives inside the plot, top-left, and carries the series, the game, the
+   * market and the hovered book's value for THAT pane. */
+  function drawLegend() {
+    const board = currentBoard();
+    if (!board) return;
+    const q = selected ? quoteFor(board, selected) : null;
+    if (mode === FAM.BOOK) {
+      activePanes().forEach(function (key) {
+        const node = paneNodes[key];
+        if (!node || !node.series) return;
+        let shown = "—";
+        node.series.points.forEach(function (pt) {
+          if (pt.book !== selected) return;
+          shown = pt.withheld ? "withheld" : node.series.fmt(pt.y);
+        });
+        node.lv.textContent = (selected || "—") + "  " + shown;
+      });
+    }
+    drawContext();
+    drawReadout();
+  }
+
+  /* §9. Cells are created once and their text reassigned, like every other mark: the readout
+   * is not exempt from the no-rebuild rule because it happens to be text. */
+  const READOUT = [
+    ["book", function (q) { return q.book + (q.isExchange ? " (exchange)" : ""); }, "lit"],
+    ["bucket", function (q, b) { return bucketOf(b, q.book) || "—"; }, ""],
+    ["line", function (q) { return q.line === null ? "—" : String(q.line); }, ""],
+    ["price a", function (q) { return num(q.prices[0], 2); }, ""],
+    ["price b", function (q) { return num(q.prices[1], 2); }, ""],
+    ["implied a", function (q) { return q.implied ? pct(q.implied[0]) : "—"; }, ""],
+    ["fair a", function (q) { return q.fair ? pct(q.fair[0]) : "—"; }, ""],
+    ["hold", function (q) { return q.hold === null ? "—" : pct(q.hold); }, "margin"],
+    ["Δ pp", function (q, b) { return comparable(b, q.book) ? signed2(q.delta_pp) : "—"; }, ""]
+  ];
+  let readoutCells = null;
+
+  function drawReadout() {
+    const board = currentBoard();
+    if (!board) return;
+    const host = $("readout");
+    if (!readoutCells) {
+      host.textContent = "";
+      readoutCells = [];
+      READOUT.forEach(function (spec) {
+        const cell = document.createElement("div");
+        cell.className = "cell" + (spec[2] ? " " + spec[2] : "");
+        const k = document.createElement("span");
+        k.className = "label";
+        k.textContent = spec[0];
+        const v = document.createElement("b");
+        cell.appendChild(k); cell.appendChild(v);
+        host.appendChild(cell);
+        readoutCells.push(v);
+      });
+    }
+    const q = quoteFor(board, selected) || board.reference;
+    READOUT.forEach(function (spec, i) { readoutCells[i].textContent = spec[1](q, board); });
+  }
+
+  function drawContext() {
+    const board = currentBoard();
+    if (!board) return;
+    const ev = board.event;
+    /* Three families, three notes. The first version had two branches and said "standalone"
+     * for anything that was not BOOK, so the time family described itself as the thing it is
+     * not. A two-way test outliving the two-way choice it was written for. */
+    let what;
+    if (mode === FAM.BOOK) {
+      what = bookPanes.length + " pane" + (bookPanes.length === 1 ? "" : "s") + " · " +
+             bookOrder.length + " books on the shared rank axis";
+    } else if (mode === FAM.TIME) {
+      what = timePanes.length + " pane" + (timePanes.length === 1 ? "" : "s") + " · " +
+             bookOrder.length + " snapshot" + (bookOrder.length === 1 ? "" : "s") +
+             " on the shared time axis";
+    } else {
+      what = "standalone";
+    }
+    $("mode-note").textContent =
+      what + "  ·  " + ev[2] + " @ " + ev[1] + "  ·  " + board.market;
+  }
+  /* =====================================================================
+   * STANDALONE PANELS — each takes the whole stage. Their x is genuinely something else,
+   * so rank-ordering it would destroy the content: the scatter's meaning IS the shape of the
+   * cloud, and the slope's IS the convergence between two axes.
+   *
+   * Each is reached through its registry entry's `draw`, never through a key comparison.
+   * They render into a dedicated <g>, so the BOOK panes' nodes are untouched by a visit here
+   * and the remembered arrangement is state nothing on this path reads or writes.
+   * ===================================================================== */
+
+  let soloG = null;
+  let soloKeyDrawn = null;
+  const soloNodes = {};
+
+  /* A standalone panel is REBUILT only when its structure changes — a different series, a
+   * different game or market, a different set of books. On a data arrival the structure key
+   * is unchanged, so the nodes are kept and only their geometry is reassigned.
+   *
+   * The first version cleared the layer on every draw, which meant a row arriving while a
+   * standalone panel was on screen tore down and recreated every mark once a minute. That is
+   * F28 exactly, on the one path the BOOK panes' update discipline did not cover, and it was
+   * found while reconciling the step (d) tests rather than by a test failing — which is why
+   * `test_live_chart_render.py` now asserts identity here too.
+   *
+   * Returns `{ g, fresh }`. `fresh` is true only when the caller must build. */
+  function soloLayer(structureKey) {
+    if (!soloG) {
+      soloG = mk($("stage"), "g", { class: "solo" });
+      soloKeyDrawn = null;
+    }
+    $("stage").appendChild(soloG);
+    if (soloKeyDrawn === structureKey) return { g: soloG, fresh: false };
+    while (soloG.firstChild) soloG.removeChild(soloG.firstChild);
+    clearMarks(function (el) { return el.__pane === "__solo"; });
+    for (const k in soloNodes) delete soloNodes[k];
+    soloKeyDrawn = structureKey;
+    return { g: soloG, fresh: true };
+  }
+
+  function soloStructureKey(board, key) {
+    /* SORTED, and that is not tidiness. `everyQuote` returns the board's bucket order, and
+     * board.py sorts `matched` by -|delta_pp|, which moves on every poll. Keying on that
+     * order rebuilt the panel once a minute while claiming to update it — the same mistake
+     * as F28's rebuild key, in a second place, found by the assertion written for the first.
+     * MEMBERSHIP is what decides whether the nodes are still the right nodes. */
+    return key + "|" + board.event[0] + "|" + board.market + "|" + W + "x" + H + "|" +
+           everyQuote(board).map(function (q) { return q.book; }).slice().sort().join(",");
+  }
+
+  function soloMark(book, el) {
+    el.__pane = "__solo";
+    return registerMark(book, el);
+  }
+
+  function frame() {
+    return { x0: PAD_L, x1: W - PAD_R, y0: 34, y1: H - AXIS_H - 22 };
+  }
+
+  /* THE OVERLAY ACCESSOR — one computation, read by every panel that plots a book against
+   * (fair probability, hold). The regime map's surface is analytical and its overlay is
+   * data; deriving those two coordinates a second time here would be a divergence surface,
+   * agreeing until it did not, with nothing to notice. Step (e) briefly inlined them while
+   * the panel was rewritten, which is how a single-accessor design quietly becomes two. */
+  function overlayPoint(q) {
+    return (q === null || q.fair === null) ? null : [q.fair[0], q.hold];
+  }
+
+  function drawSlope(board) {
+    const layer = soloLayer(soloStructureKey(board, "slope"));
+    const g = layer.g, f = frame();
+    const top = chartable(board), bottom = board.off_line.slice();
+    const two = bottom.length > 0;
+    const bandH = two ? (f.y1 - f.y0 - 54) / 2 : (f.y1 - f.y0);
+    const b1 = { top: f.y0, bot: f.y0 + bandH };
+    const b2 = { top: f.y0 + bandH + 54, bot: f.y1 };
+    const place = function (quotes, band, off) {
+      if (!quotes.length) return;
+      const vals = [];
+      quotes.forEach(function (q) { vals.push(q.implied[0], q.fair[0]); });
+      const y = linear(vals, band.bot, band.top);
+      mk(g, "line", { x1: f.x0, y1: band.top - 10, x2: f.x0, y2: band.bot + 10, class: "axis" });
+      mk(g, "line", { x1: f.x1, y1: band.top - 10, x2: f.x1, y2: band.bot + 10, class: "axis" });
+      const c1 = f.x0 + (f.x1 - f.x0) * 0.42, c2 = f.x0 + (f.x1 - f.x0) * 0.58;
+      quotes.forEach(function (q) {
+        const y0 = y(q.implied[0]), y1 = y(q.fair[0]);
+        const d = "M " + f.x0 + " " + y0 + " C " + c1 + " " + y0 + ", " +
+                  c2 + " " + y1 + ", " + f.x1 + " " + y1;
+        if (layer.fresh) {
+          const cls = "mark" + (q.book === board.referenceBook ? " is-ref" : "") +
+                      (off ? " is-off" : "");
+          soloNodes[q.book] = {
+            path: soloMark(q.book, mk(g, "path", { d: d, class: cls })),
+            hit: soloMark(q.book, mk(g, "path", { d: d, class: "hit" }))
+          };
+        } else if (soloNodes[q.book]) {
+          soloNodes[q.book].path.setAttribute("d", d);
+          soloNodes[q.book].hit.setAttribute("d", d);
+        }
+      });
+      return y;
+    };
+    const y1s = place(top, b1, false);
+    if (two) place(bottom, b2, true);
+    if (!layer.fresh) {
+      /* Text-only elements are re-made because they carry no identity a reader can hover;
+       * the MARKS, which are hoverable, were kept above. */
+      const stale = [];
+      for (let i = 0; i < g.childNodes.length; i += 1) {
+        const n = g.childNodes[i];
+        if (n.tagName === "text") stale.push(n);
+      }
+      stale.forEach(function (n) { g.removeChild(n); });
+    }
+    mk(g, "text", { x: 4, y: b1.top - 14, class: "band-label" }, "COMPARABLE");
+    mk(g, "text", { x: 4, y: b1.top - 2, class: "band-sub" },
+       board.matched.length
+         ? board.referenceBook + " + " + board.matched.length + " on " +
+           (board.referenceLine === null ? "no line" : board.referenceLine)
+         : board.referenceBook + " alone, no book on " +
+           (board.referenceLine === null ? "no line" : board.referenceLine));
+    if (two) {
+      const lines = [];
+      board.off_line.forEach(function (q) {
+        const v = q.line === null ? "—" : String(q.line);
+        if (lines.indexOf(v) === -1) lines.push(v);
+      });
+      mk(g, "text", { x: 4, y: b2.top - 14, class: "band-label" }, "OFF THE LINE");
+      mk(g, "text", { x: 4, y: b2.top - 2, class: "band-warn" },
+         board.off_line.length + " book" + (board.off_line.length === 1 ? "" : "s") +
+         " on " + lines.join(", ") + ", a different bet, never compared (B6)");
+    }
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label", "text-anchor": "middle" }, "IMPLIED");
+    mk(g, "text", { x: f.x1, y: H - 20, class: "ax-label", "text-anchor": "middle" }, "FAIR");
+    /* §8: exchanges appear in neither band and are LABELLED as excluded. The note lived on a
+     * separate element under the old scroller; in one viewport it belongs in the panel. */
+    mk(g, "text", { x: 4, y: H - 20, class: "excl-note" },
+       board.exchanges.length
+         ? board.exchanges.length + " exchange quote" +
+           (board.exchanges.length === 1 ? "" : "s") +
+           " excluded from both bands: a lay price is not a back price (B4)"
+         : "no exchange quotes on this market");
+    /* §7: exactly one label, following the selection. */
+    if (selected && y1s) {
+      const q = quoteFor(board, selected);
+      if (q && q.fair !== null && top.indexOf(q) !== -1) {
+        mk(g, "text", { x: f.x1 + 10, y: y1s(q.fair[0]) + 3.5, class: "series-label" }, selected);
+      }
+    }
+  }
+
+  function drawScatter(board) {
+    const layer = soloLayer(soloStructureKey(board, "hold_dev"));
+    const g = layer.g, f = frame();
+    const qs = chartable(board);
+    const x = linear(qs.map(function (q) { return q.hold; }), f.x0, f.x1);
+    const y = linear(qs.map(function (q) { return q.delta_pp; }), f.y1, f.y0);
+    if (layer.fresh) {
+      mk(g, "line", { x1: f.x0, y1: f.y1, x2: f.x1, y2: f.y1, class: "axis" });
+      mk(g, "line", { x1: f.x0, y1: y(0), x2: f.x1, y2: y(0), class: "zero" });
+    }
+    qs.forEach(function (q) {
+      if (layer.fresh) {
+        soloNodes[q.book] = {
+          dot: soloMark(q.book, mk(g, "circle",
+            { cx: x(q.hold), cy: y(q.delta_pp), r: 4, class: "dot" })),
+          hit: soloMark(q.book, mk(g, "circle",
+            { cx: x(q.hold), cy: y(q.delta_pp), r: 11, class: "hit-dot" }))
+        };
+      } else if (soloNodes[q.book]) {
+        ["dot", "hit"].forEach(function (k) {
+          soloNodes[q.book][k].setAttribute("cx", x(q.hold));
+          soloNodes[q.book][k].setAttribute("cy", y(q.delta_pp));
+        });
+      }
+    });
+    if (!layer.fresh) {
+      const stale = [];
+      for (let i = 0; i < g.childNodes.length; i += 1) {
+        if (g.childNodes[i].tagName === "text") stale.push(g.childNodes[i]);
+      }
+      stale.forEach(function (n) { g.removeChild(n); });
+    }
+    mk(g, "text", { x: 4, y: f.y0 + 12, class: "legend-k" }, "HOLD VS DEVIATION");
+    mk(g, "text", { x: 4, y: f.y0 + 28, class: "legend-v" },
+       selected ? selected + "  " + signed2(
+         (quoteFor(board, selected) || {}).delta_pp) + " pp" : "—");
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "HOLD %");
+    mk(g, "text", { x: f.x1 + 10, y: f.y0 + 6, class: "tick" }, signed2(y.hi));
+    mk(g, "text", { x: f.x1 + 10, y: f.y1, class: "tick" }, signed2(y.lo));
+  }
+
+  function drawAnalytic() {
+    const layer = soloLayer("gamma|" + W + "x" + H);
+    if (!layer.fresh) return;   /* no data enters this panel; nothing can have changed */
+    const g = layer.g, f = frame();
+    const V = 0.05, ps = [];
+    for (let i = 1; i < 200; i += 1) ps.push(i / 200);
+    const series = Gamma.METHODS.map(function (m) {
+      return { m: m, ys: ps.map(function (pp) { return m.fn(pp, V); }) };
+    });
+    const all = [];
+    series.forEach(function (sr) { sr.ys.forEach(function (v) { all.push(v); }); });
+    const x = linear(ps, f.x0, f.x1), y = linear(all, f.y1, f.y0);
+    mk(g, "line", { x1: f.x0, y1: y(0), x2: f.x1, y2: y(0), class: "zero" });
+    mk(g, "line", { x1: f.x0, y1: f.y0 - 8, x2: f.x0, y2: f.y1 + 8, class: "axis" });
+    series.forEach(function (sr, i) {
+      let d = "";
+      ps.forEach(function (pp, j) { d += (j ? " L " : "M ") + x(pp) + " " + y(sr.ys[j]); });
+      mk(g, "path", { d: d, class: "mark analytic-line", "data-method": sr.m.key });
+      /* §7's carve-out: these are METHODS, nothing hovers them, so identity comes from a
+       * stacked legend inside the plot rather than from endpoint labels that would overlap. */
+      const ly = f.y0 + 8 + i * 16;
+      mk(g, "line", { x1: f.x0 + 8, y1: ly, x2: f.x0 + 26, y2: ly, class: "mark analytic-line" });
+      mk(g, "text", { x: f.x0 + 32, y: ly + 3.5, class: "legend-k" }, sr.m.label.toUpperCase());
+      mk(g, "text", { x: f.x0 + 190, y: ly + 3.5, class: "tick" }, sr.m.note);
+    });
+    [0.5, 1 / 3].forEach(function (c) {
+      mk(g, "line", { x1: x(c), y1: f.y0 - 4, x2: x(c), y2: f.y1 + 4, class: "zero" });
+      mk(g, "text", { x: x(c), y: f.y1 + 18, class: "tick", "text-anchor": "middle" },
+         "p = " + (c === 0.5 ? "1/2" : "1/3"));
+    });
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "PROBABILITY");
+    mk(g, "text", { x: f.x1, y: f.y0 - 8, class: "ax-label", "text-anchor": "end" },
+       "BETA AT V = 0.05");
+  }
+
+  const R_COLS = 60, R_ROWS = 24, R_VMAX = 0.16;
+  function drawRegime(board) {
+    const layer = soloLayer(soloStructureKey(board, "regime"));
+    const g = layer.g, f = frame();
+    const x = function (pp) { return f.x0 + pp * (f.x1 - f.x0); };
+    const yv = function (v) { return f.y1 - (v / R_VMAX) * (f.y1 - f.y0); };
+    let peak = 0;
+    const grid = [];
+    if (!layer.fresh) {
+      /* The surface is a function of nothing the feed carries, so it never needs redrawing.
+       * Only the overlay moves. */
+      chartable(board).forEach(function (q) {
+        const n = soloNodes[q.book];
+        const pt = overlayPoint(q);
+        if (!n || !pt) return;
+        n.dot.setAttribute("cx", x(pt[0]));
+        n.dot.setAttribute("cy", f.y1 - (pt[1] / R_VMAX) * (f.y1 - f.y0));
+      });
+      return;
+    }
+    for (let i = 0; i < R_COLS; i += 1) {
+      for (let j = 0; j < R_ROWS; j += 1) {
+        const pp = (i + 0.5) / R_COLS, v = ((j + 0.5) / R_ROWS) * R_VMAX;
+        const b = Math.abs(Gamma.additive(pp, v));
+        if (b > peak) peak = b;
+        grid.push({ p: pp, v: v, b: b });
+      }
+    }
+    const cw = (f.x1 - f.x0) / R_COLS, ch = (f.y1 - f.y0) / R_ROWS;
+    grid.forEach(function (c) {
+      mk(g, "rect", { x: x(c.p) - cw / 2, y: yv(c.v) - ch / 2, width: cw + 0.5,
+                      height: ch + 0.5, fill: "var(--margin)",
+                      "fill-opacity": (c.b / peak * 0.82).toFixed(4) });
+    });
+    mk(g, "line", { x1: f.x0, y1: f.y1, x2: f.x1, y2: f.y1, class: "axis" });
+    mk(g, "line", { x1: x(0.5), y1: f.y0 - 4, x2: x(0.5), y2: f.y1 + 4, class: "zero" });
+    mk(g, "text", { x: x(0.5), y: f.y0 - 8, class: "tick", "text-anchor": "middle" },
+       "p = 1/2, bias zero at every hold");
+    /* Same accessor the BOOK panes read. A second derivation here would be a divergence
+     * surface, agreeing until it did not. */
+    chartable(board).forEach(function (q) {
+      const pt = overlayPoint(q);
+      if (!pt) return;
+      soloNodes[q.book] = { dot: soloMark(q.book, mk(g, "circle",
+        { cx: x(pt[0]), cy: yv(pt[1]), r: 4, class: "dot overlay" })) };
+    });
+    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "FAIR PROBABILITY");
+    mk(g, "text", { x: f.x1, y: H - 20, class: "ax-label", "text-anchor": "end" },
+       "HOLD, 0 TO " + (R_VMAX * 100).toFixed(0) + "%");
+  }
+
+  /* =====================================================================
+   * THE TOOLBAR — the dropdown replaces the pill row entirely. §3 of the step brief.
+   * ===================================================================== */
+
+  function buildMenu() {
+    const box = $("series-menu");
+    box.textContent = "";
+    const groups = [
+      [FAM.BOOK, "Book-indexed · stack and share the crosshair"],
+      [FAM.SOLO, "Standalone · replaces the panel"],
+      [FAM.TIME, "Time-indexed · shares a time axis"]
+    ];
+    groups.forEach(function (grp) {
+      const head = document.createElement("div");
+      head.className = "menu-group";
+      head.textContent = grp[1];
+      box.appendChild(head);
+      REGISTRY.filter(function (sd) { return sd.family === grp[0]; }).forEach(function (sd) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "menu-item";
+        b.setAttribute("data-series", sd.key);
+        b.setAttribute("role", "option");
+        const name = document.createElement("span");
+        name.textContent = sd.label;
+        const form = document.createElement("span");
+        form.className = "form";
+        form.textContent = sd.form || sd.axis;
+        const sp = document.createElement("span");
+        sp.className = "spacer";
+        b.appendChild(name); b.appendChild(form); b.appendChild(sp);
+        if (sd.status !== READY) {
+          b.disabled = true;
+          const aw = document.createElement("span");
+          aw.className = "await";
+          aw.textContent = sd.why;
+          b.appendChild(aw);
+        } else {
+          const on = sd.family === FAM.BOOK ? bookPanes.indexOf(sd.key) !== -1
+            : (sd.family === FAM.TIME ? (mode === FAM.TIME && timePanes.indexOf(sd.key) !== -1)
+            : (mode === FAM.SOLO && soloKey === sd.key));
+          b.setAttribute("aria-checked", String(on));
+        }
+        box.appendChild(b);
+      });
+    });
+  }
+
+  function chooseSeries(key) {
+    const sdef = mustSeries(key);
+    if (sdef.status !== READY) return;
+    if (sdef.family === FAM.TIME) {
+      const returning = mode !== FAM.TIME;
+      mode = FAM.TIME;
+      domainKind = FAM.TIME;
+      soloKey = null;
+      if (!returning) {
+        const at = timePanes.indexOf(key);
+        if (at === -1) timePanes.push(key);
+        else if (timePanes.length > 1) timePanes.splice(at, 1);
+      }
+    } else if (sdef.family === FAM.BOOK) {
+      /* Two different actions wear the same gesture, and conflating them lost the
+       * arrangement. From STANDALONE, choosing a book series means "go back" — the ruling
+       * says the pane set and order are restored, so nothing is toggled. From BOOK, the same
+       * choice means "add or remove this pane". The first version toggled in both cases, so
+       * returning via a series already in the set silently dropped it, and the round trip
+       * came back one pane short. Caught by the round-trip assertion. */
+      const returning = mode !== FAM.BOOK;
+      mode = FAM.BOOK;
+      domainKind = FAM.BOOK;
+      soloKey = null;
+      if (!returning) {
+        const at = bookPanes.indexOf(key);
+        if (at === -1) bookPanes.push(key);
+        else if (bookPanes.length > 1) bookPanes.splice(at, 1);
+      }
+    } else if (sdef.family === FAM.SOLO) {
+      mode = FAM.SOLO;
+      soloKey = key;
+    }
+    refresh();
+  }
+
+  function movePane(action, key) {
+    const panes = activePanes();
+    const at = panes.indexOf(key);
+    if (at === -1) return;
+    if (action === "off") {
+      if (panes.length > 1) panes.splice(at, 1);
+    } else if (action === "up" && at > 0) {
+      panes.splice(at, 1); panes.splice(at - 1, 0, key);
+    } else if (action === "down" && at < panes.length - 1) {
+      panes.splice(at, 1); panes.splice(at + 1, 0, key);
+    }
+    refresh();
+  }
+
+  function buildEventSelect(payload) {
+    const sel = $("event-select");
+    if (sel.__built === payload.events.length) return;
+    sel.textContent = "";
+    payload.events.forEach(function (ev, i) {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = ev[2] + " @ " + ev[1];
+      sel.appendChild(o);
+    });
+    sel.value = String(PANEL_EVENT);
+    sel.__built = payload.events.length;
+    const ms = $("market-select");
+    ms.textContent = "";
+    payload.markets.forEach(function (m) {
+      const o = document.createElement("option");
+      o.value = m; o.textContent = m;
+      ms.appendChild(o);
+    });
+    ms.value = PANEL_MARKET;
+  }
+
+  /* =====================================================================
+   * ORCHESTRATION
+   * ===================================================================== */
+
+  function refresh() {
+    if (!boardNow) return;
+    measure();
+    const stage = $("stage");
+    if (mode === FAM.BOOK || mode === FAM.TIME) {
+      if (soloG && soloG.parentNode) { soloG.parentNode.removeChild(soloG); soloG = null; }
+      soloKeyDrawn = null;
+      for (const k in soloNodes) delete soloNodes[k];
+      clearMarks(function (el) { return el.__pane === "__solo"; });
+      $("add-pane").hidden = false;
+      $("sort-wrap").hidden = mode === FAM.TIME;
+      $("series-name").textContent = activePanes().length +
+        (mode === FAM.TIME ? " time series" : " book series");
+      drawBookMode(boardNow);
+    } else {
+      /* Leaving BOOK mode drops the panes; staying in SOLO keeps whatever the layer holds,
+       * so an arrival does not rebuild it. */
+      for (const key in paneNodes) {
+        const n = paneNodes[key];
+        if (n.g.parentNode) n.g.parentNode.removeChild(n.g);
+        clearMarks(function (el) { return el.__pane === key; });
+        delete paneNodes[key];
+      }
+      if (crossNodes) {
+        [crossNodes.line, crossNodes.bg, crossNodes.tx].forEach(function (el) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+        crossNodes = null;
+      }
+      if (axisNodes) {
+        [axisNodes.label].concat(axisNodes.ticks).forEach(function (el) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+        axisNodes = null;
+      }
+      $("add-pane").hidden = true;
+      $("sort-wrap").hidden = true;
+      const sdef = mustSeries(soloKey);
+      $("series-name").textContent = sdef.label;
+      sdef.draw(boardNow);
+      drawContext();
+    }
+    buildMenu();
+    highlight();
+  }
+
+  function newestPayload() {
+    const list = Array.from(rows.values()).sort(function (a, b) { return b.id - a.id; });
+    return list.length ? list[0].payload : null;
+  }
+
+  function renderPanel(payload) {
+    timeCache = null;
+    const board = LiveBoard.bucket(payload, PANEL_EVENT, PANEL_MARKET);
+    boardNow = board;
+    buildEventSelect(payload);
+    if (!board) {
+      $("mode-note").textContent =
+        "no panel: the reference book does not quote that market";
+      return;
+    }
+    if (selected === null || !quoteFor(board, selected)) {
+      selected = board.referenceBook;
+      locked = board.referenceBook;
+    }
+    $("bookcount").textContent = String(everyQuote(board).length);
+    $("gamecount").textContent = String(payload.events.length);
+    refresh();
+  }
+
+  /* ---------- connection state ---------- */
+  function setState(name, label) {
+    $("status").className = "status state-" + name;
+    $("conn").textContent = label;
+  }
+
+  /* A page that is connected and receiving nothing looks exactly like a page that is
+   * working. The age counter is what separates them, so it runs on its own timer and
+   * does not wait for an arrival to update. */
+  function tickAge() {
+    const stat = $("age-stat");
+    if (lastArrival === null) { $("age").textContent = "—"; stat.className = "stat"; return; }
+    const secs = Math.round((Date.now() - lastArrival) / 1000);
+    $("age").textContent = secs + "s ago";
+    // The poller's period is 60s. Past two and a half of them, something is wrong.
+    const stale = secs > 150;
+    stat.className = stale ? "stat warn" : "stat";
+    if (stale && $("status").className.indexOf("state-live") !== -1) {
+      setState("stalled", "stalled");
+    } else if (!stale && $("status").className.indexOf("state-stalled") !== -1) {
+      setState("live", "live");
+    }
+  }
+
+  /* ---------- Realtime: a hand-rolled Phoenix channel, no package, no CDN ---------- */
+  const HEARTBEAT_MS = 25000;
+  let ws = null, hb = null, ref = 0, attempt = 0, closedByUs = false;
+
+  function send(topic, event, payload) {
+    ws.send(JSON.stringify({ topic: topic, event: event, payload: payload, ref: String(++ref) }));
+  }
+
+  function connect() {
+    setState(attempt === 0 ? "connecting" : "reconnecting",
+             attempt === 0 ? "connecting" : "reconnecting");
+    /* Every handler below is guarded on `sock === ws`. A socket that has been superseded
+     * must go quiet: without the guard its late close event schedules a SECOND reconnect,
+     * and from then on two sockets exist, each with its own heartbeat, each spawning more
+     * on the next drop. The page keeps working the entire time — it just holds a growing
+     * number of connections, which is the kind of leak that only shows up hours in. */
+    const sock = new WebSocket(
+      SUPABASE_URL.replace(/^http/, "ws") +
+      "/realtime/v1/websocket?apikey=" + encodeURIComponent(SUPABASE_KEY) + "&vsn=1.0.0"
+    );
+    ws = sock;
+
+    sock.onopen = function () {
+      if (sock !== ws) { sock.close(); return; }
+      send("realtime:snapshots", "phx_join", {
+        config: {
+          broadcast: { self: false },
+          presence: { key: "" },
+          postgres_changes: [{ event: "INSERT", schema: "public", table: SUPABASE_TABLE }]
+        }
+      });
+      hb = setInterval(function () {
+        if (sock === ws && ws.readyState === 1) send("phoenix", "heartbeat", {});
+      }, HEARTBEAT_MS);
+    };
+
+    sock.onmessage = function (m) {
+      if (sock !== ws) return;
+      // JSON.parse, not eval and not a substituted literal. A bare NaN throws here.
+      let d;
+      try { d = JSON.parse(m.data); } catch (e) { return; }
+      if (d.event === "phx_reply" && d.payload && d.payload.status === "ok") {
+        if ($("conn").textContent !== "live") {
+          attempt = 0;
+          setState("live", "live");
+          // Every join is a possible gap, including the first reconnect after a sleep.
+          backfill();
+        }
+      } else if (d.event === "postgres_changes") {
+        const rec = d.payload && d.payload.data && d.payload.data.record;
+        if (rec && typeof rec.id === "number") {
+          /* A HOLE IN THE MIDDLE, which neither the reconnect path nor a max-id check can
+           * see. Two ways it happens and neither involves the socket closing:
+           *
+           *   - startup. The history query and the subscription race. A row inserted after
+           *     the query's snapshot but before the join is registered server-side is
+           *     delivered to nobody. Observed live: the page loaded through id 356, the
+           *     table gained 357, and the socket's next frame was 358.
+           *   - a dropped frame. Realtime is not a durable log; a message can be lost
+           *     without the connection going down.
+           *
+           * In both cases the page stays connected, keeps receiving, reaches the table's
+           * maximum id, and holds a set with a hole in it. Every internal invariant is
+           * satisfied — contiguity is the one property that is not, and the page can check
+           * it because the row carries its own id. */
+          const before = highestId;
+          const skipped = before > 0 && rec.id > before + 1;
+          if (absorb(rec, false)) {
+            if (tableTotal !== null) tableTotal += 1;
+            render();
+          }
+          if (skipped) {
+            gapsRefilled += 1;
+            backfill(before);
+          }
+        }
+      }
+    };
+
+    sock.onclose = function () {
+      if (sock !== ws) return;
+      if (hb) { clearInterval(hb); hb = null; }
+      if (closedByUs) return;
+      // Backoff, capped. A laptop waking after eight hours should not hammer.
+      const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+      attempt += 1;
+      setState("offline", "offline");
+      setTimeout(connect, delay);
+    };
+
+    sock.onerror = function () { /* onclose does the work; this keeps it off the console. */ };
+  }
+
+  /* Exposed so the reconnect path can be EXERCISED rather than assumed:
+   *   __live.kill()   drops the socket the way a network change would
+   *   __live.state()  the ids held, to check the gap was filled with no duplicate */
+  window.__live = {
+    kill: function () { if (ws) ws.close(); },
+    /* Exposed so the decode can be driven over a committed payload without a browser and
+     * without a network — the parity test calls exactly this, on the page's own bytes. */
+    decode: function (payload, eventIdx, marketKey) {
+      return decodePanel(payload, eventIdx, marketKey);
+    },
+    bucket: function (payload, eventIdx, marketKey) {
+      return LiveBoard.bucket(payload, eventIdx, marketKey);
+    },
+    panel: function () { return { event: PANEL_EVENT, market: PANEL_MARKET }; },
+    /* Selection and crosshair, exposed so the browser test drives the SAME code path a
+     * pointer does rather than a re-implementation of it. */
+    pick: function (book, lock) { pick(book, lock); },
+    selection: function () { return { selected: selected, locked: locked }; },
+    crosshairAt: function (vx) { return crosshairAt(vx); },
+    registry: function () {
+      return REGISTRY.map(function (s) {
+        return { key: s.key, label: s.label, quantity: s.quantity, unit: s.unit,
+                 axis: s.axis, panel: s.panel, status: s.status, why: s.why || null };
+      });
+    },
+    pick: function (book, lock) { pick(book, lock); },
+    selection: function () { return { selected: selected, locked: locked }; },
+    crosshairAt: function (vx) { return crosshairAt(vx); },
+    registry: function () {
+      return REGISTRY.map(function (sd) {
+        return { key: sd.key, label: sd.label, family: sd.family, quantity: sd.quantity,
+                 unit: sd.unit, axis: sd.axis, form: sd.form || null, status: sd.status,
+                 why: sd.why || null, hasCompute: typeof sd.compute === "function",
+                 hasDraw: typeof sd.draw === "function" };
+      });
+    },
+    mustSeries: function (key) { return mustSeries(key).key; },
+    panes: function () { return activePanes().slice(); },
+    bookPanes: function () { return bookPanes.slice(); },
+    mode: function () {
+      return { mode: mode, solo: soloKey, sort: sortKey, domain: domainKind };
+    },
+    timePanes: function () { return timePanes.slice(); },
+    choose: function (key) { chooseSeries(key); },
+    move: function (action, key) { movePane(action, key); },
+    setSort: function (k) { sortKey = k; refresh(); },
+    bookOrder: function () { return bookOrder.slice(); },
+    setPanel: function (eventIdx, marketKey) {
+      PANEL_EVENT = eventIdx;
+      PANEL_MARKET = marketKey;
+      render();
+    },
+    newestPayload: function () {
+      const list = Array.from(rows.values()).sort(function (a, b) { return b.id - a.id; });
+      return list.length ? list[0].payload : null;
+    },
+    state: function () {
+      return {
+        held: rows.size,
+        highestId: highestId,
+        ids: Array.from(rows.keys()).sort(function (a, b) { return a - b; }),
+        conn: $("conn").textContent,
+        gapsRefilled: gapsRefilled
+      };
+    }
+  };
+
+  /* Bound ONCE, to containers that outlive every redraw. Nothing in a draw function calls
+   * addEventListener; the structural check in test_live_selection.py enforces that. */
+  bindSelection($("stage"));
+  $("stage").addEventListener("pointermove", function (e) {
+    if (mode !== FAM.BOOK) return;
+    const r = $("stage").getBoundingClientRect();
+    if (!r.width) return;
+    crosshairAt(((e.clientX - r.left) / r.width) * W);
+  });
+  $("stage").addEventListener("click", function (e) {
+    const mv = e.target && e.target.getAttribute && e.target.getAttribute("data-move");
+    if (!mv) return;
+    const parts = mv.split(":");
+    movePane(parts[0], parts[1]);
+  });
+  $("series-btn").addEventListener("click", function () {
+    const m = $("series-menu");
+    m.hidden = !m.hidden;
+    $("series-btn").setAttribute("aria-expanded", String(!m.hidden));
+  });
+  $("series-menu").addEventListener("click", function (e) {
+    let el = e.target;
+    while (el && el.getAttribute && !el.getAttribute("data-series")) el = el.parentNode;
+    if (!el || !el.getAttribute) return;
+    if (el.disabled) return;
+    chooseSeries(el.getAttribute("data-series"));
+  });
+  $("add-pane").addEventListener("click", function () {
+    const m = $("series-menu");
+    m.hidden = false;
+    $("series-btn").setAttribute("aria-expanded", "true");
+  });
+  $("sort-select").addEventListener("change", function () {
+    sortKey = $("sort-select").value;
+    refresh();
+  });
+  $("event-select").addEventListener("change", function () {
+    PANEL_EVENT = parseInt($("event-select").value, 10);
+    selected = null;
+    if (boardNow !== null) { const p = newestPayload(); if (p) renderPanel(p); }
+  });
+  $("market-select").addEventListener("change", function () {
+    PANEL_MARKET = $("market-select").value;
+    selected = null;
+    const p = newestPayload();
+    if (p) renderPanel(p);
+  });
+  window.addEventListener("resize", function () { if (boardNow) refresh(); });
+  buildMenu();
+
+
+  setInterval(tickAge, 1000);
+  connect();
+  loadHistory().catch(function () {
+    setState("offline", "history failed");
+  });
+
+  window.addEventListener("beforeunload", function () { closedByUs = true; if (ws) ws.close(); });
+})();
+</script>
+</body>
+</html>
