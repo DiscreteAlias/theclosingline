@@ -20,8 +20,28 @@
 
     --accent:    #22d3ee;   /* 10.95:1 */
     --margin:    #f59e0b;   /*  9.21:1 */
-    --data:      #4a6a78;   /*  3.41:1 */
-    --data-dim:  #324751;   /*  2.03:1 */
+    --data:      #4a6a78;   /*  3.41:1 — an unselected data mark, and the ramp's low stop */
+    --data-dim:  #324751;   /*  2.03:1 — retired for marks; see --dim-alpha */
+
+    /* §2's sequential ramp. The endpoints are the two tokens above and --margin, so the ramp
+       introduces no hue the spec had not already defined; the midpoint is taken in LINEAR
+       light, which is why it is a warm tan rather than the muddy sRGB average. */
+    --ramp-lo:   #4a6a78;   /*  3.41:1 */
+    --ramp-mid:  #ba8757;   /*  6.30:1 */
+    --ramp-hi:   #f59e0b;   /*  9.21:1 — the margin token; more hold IS more margin */
+
+    /* Emphasis ADDS. A de-emphasised mark keeps its ramp colour at this alpha, which puts the
+       ramp's dark end at 2.40:1 — lighter than the --data-dim it replaces, measured. 0.55 was
+       tried first and measures 1.80:1: darker than what it replaced, and it would have
+       shipped as a fix while making the thing it fixed worse. */
+    --dim-alpha: 0.75;
+
+    /* §2's analytical carve-out: four fixed, unhoverable methods. None is a role colour, so
+       no curve can be misread as selected or as the margin quantity. */
+    --fam-1:     #8a8a93;   /*  5.78:1  multiplicative */
+    --fam-2:     #7aa2f7;   /*  7.85:1  additive */
+    --fam-3:     #7bd88f;   /* 11.36:1  Shin (n=3) */
+    --fam-4:     #c48ce0;   /*  7.70:1  power */
 
     --mono: 'SF Mono','Cascadia Code','JetBrains Mono','Roboto Mono',ui-monospace,monospace;
   }
@@ -42,6 +62,17 @@
   .app { height: 100%; display: flex; flex-direction: column; padding: 0 20px; }
   .app > header { padding: 16px 0 12px; }
   h1 { font: 600 19px/1.2 var(--mono); color: var(--primary); margin: 0; }
+  /* The wordmark takes the page's text colour through `currentColor`, so it follows the
+     token rather than carrying a hex of its own — the asset ships #000000, which on this
+     background is a mark that is there and cannot be seen.
+
+     `overflow: visible` is load-bearing and it is measured, not precautionary: the mark's
+     viewBox was calibrated to Arial Black, and where that face is absent the fallback puts
+     "THE" four units above the top edge, where the SVG default of `overflow: hidden` cuts
+     it. The same substitution leaves 16% of the box empty on the right, which is why
+     nothing here centres or right-aligns it. See `wordmark.svg`'s own header. */
+  .wordmark { line-height: 0; }
+  .wordmark svg { display: block; height: 38px; width: auto; overflow: visible; }
   .subtitle {
     margin: 6px 0 0; color: var(--secondary); max-width: 118ch; font-size: 12px;
   }
@@ -100,26 +131,29 @@
   .stage { flex: 1; min-height: 0; position: relative; }
   svg#stage { display: block; width: 100%; height: 100%; }
 
-  path.mark { fill: none; stroke: var(--data); stroke-width: 1; opacity: .85; }
-  path.mark.is-sel { stroke: var(--accent); stroke-width: 2; opacity: 1; }
-  path.mark.is-dim { stroke: var(--data-dim); stroke-width: 1; }
+  /* Marks are coloured by their VALUE at draw time, so these rules carry only the
+     states. `is-dim` reduces alpha and leaves the hue alone: the reader keeps the
+     distribution while one mark is emphasised, which is what emphasis-adds means. */
+  path.mark { fill: none; stroke: var(--data); stroke-width: 1; opacity: .9; }
+  path.mark.is-sel { stroke: var(--accent) !important; stroke-width: 2; opacity: 1; }
+  path.mark.is-dim { opacity: var(--dim-alpha); }
   path.mark.is-off { stroke-dasharray: 4 3; }
   path.hit { fill: none; stroke: transparent; stroke-width: 11; cursor: pointer; }
 
   circle.dot { fill: var(--data); }
-  circle.dot.is-sel { fill: var(--accent); }
-  circle.dot.is-dim { fill: var(--data-dim); }
+  circle.dot.is-sel { fill: var(--accent) !important; }
+  circle.dot.is-dim { opacity: var(--dim-alpha); }
   circle.hit-dot { fill: transparent; cursor: pointer; }
   rect.hit-col { fill: transparent; cursor: pointer; }
   rect.cell { stroke: none; }
   rect.cell.is-sel { stroke: var(--accent); stroke-width: 1; }
   rect.bar { fill: var(--data); }
-  rect.bar.is-sel { fill: var(--accent); }
-  rect.bar.is-dim { fill: var(--data-dim); }
+  rect.bar.is-sel { fill: var(--accent) !important; }
+  rect.bar.is-dim { opacity: var(--dim-alpha); }
   rect.track { fill: var(--panel); }
   line.link { stroke: var(--data); stroke-width: 1; }
-  line.link.is-sel { stroke: var(--accent); stroke-width: 2; }
-  line.link.is-dim { stroke: var(--data-dim); }
+  line.link.is-sel { stroke: var(--accent) !important; stroke-width: 2; }
+  line.link.is-dim { opacity: var(--dim-alpha); }
 
   .axis, .grid { stroke: var(--rule); stroke-width: 1; }
   .zero { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
@@ -128,6 +162,13 @@
 
   .ax-label { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
   .tick { font: 11px var(--mono); fill: var(--muted); }
+  /* The axis carries book NAMES now, rotated, and the reference is called out in the
+     accent so the anchor is findable in the label row as well as in the marks. */
+  .tick-ref { fill: var(--accent); }
+  .cap-note { font: 11px var(--mono); fill: var(--muted); }
+  /* The break: page-coloured, so it cuts the mark rather than sitting on it. */
+  path.brk { fill: none; stroke: var(--page); stroke-width: 3.5; }
+  .clip-val { font: 11px var(--mono); fill: var(--primary); }
   .tick.is-sel { fill: var(--accent); }
   .tick.is-dim { fill: var(--faint); }
   .legend-k { font: 11px var(--mono); letter-spacing: .13em; fill: var(--muted); }
@@ -140,7 +181,9 @@
   .excl-note { font: 11px var(--mono); fill: var(--muted); }
   .badge-bg { fill: var(--accent); }
   .badge-tx { font: 11px var(--mono); fill: var(--page); }
-  path.analytic-line { stroke: var(--data); stroke-width: 1; opacity: .85; }
+  /* §2's carve-out: a fixed family takes hues, assigned by index at draw time. */
+  path.analytic-line { stroke-width: 1.4; opacity: .95; }
+  line.analytic-line { stroke-width: 2; }
   circle.overlay { stroke: var(--page); stroke-width: 1; }
 
   .pane-btn { font: 11px var(--mono); fill: var(--muted); cursor: pointer; }
@@ -179,7 +222,79 @@
 <body>
 <div class="app">
   <header>
-    <h1>The Closing Line</h1>
+    <h1 class="wordmark"><!--
+  THE CLOSING LINE — wordmark, variant 04c  [D]
+
+  SPEC
+    Layout      Two lines, left-aligned, ragged right. "THE" set small
+                above "CLOSING LINE". No symbols, no rules, no container.
+    Color       #000000 solid. Background is transparent by design.
+    Line 1      "THE" — 26px, weight 900, letter-spacing 4, baseline y=20
+    Line 2      "CLOSING LINE" — 52px, weight 900, no tracking, baseline y=74
+    Gap         ~17px between the baseline of line 1 and the cap-height
+                top of line 2. This is the load-bearing measurement; it is
+                what makes the two lines read as one mark rather than two.
+    Widths      Natural. Nothing is stretched with textLength, so glyph
+                proportions are undistorted.
+
+  KNOWN ISSUES — read before shipping
+    1. The typeface is a PLACEHOLDER. Arial Black is not licensed for
+       consistent web delivery and renders differently per machine. Swap
+       for a heavy condensed-ish grotesque — Archivo Black, Anton, or
+       Inter Black are free candidates — then CONVERT THE TEXT TO OUTLINES
+       so the asset no longer depends on a font being present.
+    2. After outlining, tighten the viewBox to the real bounding box. The
+       440x80 below is estimated from Arial Black metrics and will be
+       wrong for any other face.
+    3. Hierarchy here comes only from size — both lines are the same face
+       at the same weight. If it reads top-heavy once the real face is in,
+       drop "THE" to ~22px rather than reducing its weight.
+    4. There is no square/avatar version of this mark. The wide lockup
+       shrinks badly into a favicon crop; that needs a separate cut.
+
+  AS SHIPPED — what this copy changes, and what it measured
+    Source      specs/the-closing-line-04c.svg. Three edits, no geometry
+                touched: fill #000000 -> currentColor so the page's own
+                token drives it (on #0a0a0c the original is invisible);
+                the C2PA manifest removed (7.8 KB of 10.1 KB, and stale
+                the moment the file is edited); the intrinsic width/height
+                dropped so the CSS sizes it and the viewBox sets the ratio.
+
+    Issue 1 is LIVE, not theoretical, and it is measured rather than
+    argued. Rendered where Arial Black is absent — which is every machine
+    in this repo's CI and most visitors' — the fallback lays "CLOSING LINE"
+    out 369.8 units wide inside a 440-unit viewBox: 70 units, 16% of the
+    mark, is empty on the right, so anything that centres or right-aligns
+    the box is wrong by that much. "THE" comes back with a bounding box at
+    y = -4, four units ABOVE the viewBox, so the mark is clipped at the top
+    unless the page sets overflow: visible. The page sets it.
+
+    `document.fonts.check('900 52px "Arial Black"')` returns TRUE on that
+    same machine. It reports that the family resolves, not that the face is
+    present, so it cannot be used to detect the substitution — an
+    instrument answering an adjacent question, which is the register's
+    most frequent finding and worth the line here too.
+
+    The fix is the one issue 1 already names: convert to outlines, then
+    tighten the viewBox to the real bounding box. Until then the mark's
+    exact shape is a property of the visitor's machine.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 440 80"
+     role="img" aria-labelledby="tcl-title">
+  <title id="tcl-title">The Closing Line</title>
+
+  <text x="0" y="20"
+        font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+        font-size="26" font-weight="900" letter-spacing="4"
+        fill="currentColor">THE</text>
+
+  <text x="0" y="74"
+        font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+        font-size="52" font-weight="900"
+        fill="currentColor">CLOSING LINE</text>
+</svg>
+</h1>
     <p class="subtitle">A research terminal for sports betting. Live sharp-market
       microstructure, strategy testing under anytime-valid inference, and a season record
       that certifies itself with a stated error rate. Full platform incoming.</p>
@@ -1317,7 +1432,41 @@ var Gamma = (function () {
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   }
 
-  const PAD_L = 148, PAD_R = 74, AXIS_H = 26, PANE_GAP = 8;
+  /* The right gutter holds TWO columns: the scale labels, and the pane buttons at the
+     * edge. They shared one column and collided — measured, two pairs — because the label
+     * grew rightwards from a fixed x into the buttons' seat. The label now grows LEFTWARDS
+     * from its own column, so its width no longer reaches anything. */
+  const PAD_L = 148, PAD_R = 96, PANE_GAP = 8;
+  const BTN_X = 14, SCALE_X = 32;
+
+  /* The book axis carries rotated book NAMES, which need the height a rank number did not.
+   * A time domain's ticks are clock readings and stay horizontal, so the strip shrinks back
+   * rather than leaving eighty pixels of nothing under a chart that does not use them.
+   *
+   * The strip is sized from the labels the page ACTUALLY drew, not from a constant chosen
+   * against the longest name in one payload. A fixed height was the first version: 104 px,
+   * enough for the fixture's 13-character books, and the crosshair badge landed on top of
+   * them — measured, not noticed by eye. A longer book name in a later payload would have
+   * done the same thing again with no code change to blame. */
+  const AXIS_MIN = 26, AXIS_BADGE = 18, AXIS_PAD = 14, AXIS_MAX = 220;
+  let axisBookH = 104;
+  function axisH() { return domainKind === FAM.BOOK && mode === FAM.BOOK ? axisBookH : AXIS_MIN; }
+
+  /* Under rotate(-90) a label's VERTICAL extent is its unrotated box WIDTH. `getBBox` is a
+   * layout measurement and the DOM stubs the node harnesses use do not have one, so those
+   * fall back to a character estimate — stated because a silent fallback to a wrong number
+   * is how a geometry claim goes green without a layout engine. */
+  function labelExtent(nodes) {
+    let w = 0;
+    nodes.forEach(function (t) {
+      if (t.getAttribute("visibility") === "hidden") return;
+      let b = 0;
+      if (t.getBBox) { try { b = t.getBBox().width; } catch (e) { b = 0; } }
+      if (!b) b = (t.textContent || "").length * 6.6;
+      if (b > w) w = b;
+    });
+    return w;
+  }
 
   function extent(values) {
     let lo = Infinity, hi = -Infinity;
@@ -1329,14 +1478,101 @@ var Gamma = (function () {
     return [lo, hi];
   }
 
-  function linear(values, lo_px, hi_px) {
+  function linear(values, lo_px, hi_px, tight) {
     const e = extent(values);
-    const pad = Math.max((e[1] - e[0]) * 0.18, 1e-6);
+    /* A capped scale is drawn EXACTLY to its bounds: padding above a ceiling would reopen
+     * the headroom the ceiling was there to close, and the top tick would then read a
+     * number that is not the ceiling. */
+    const pad = tight ? 0 : Math.max((e[1] - e[0]) * 0.18, 1e-6);
     const lo = e[0] - pad, hi = e[1] + pad;
     const span = hi - lo;
     const f = function (v) { return lo_px + ((v - lo) / span) * (hi_px - lo_px); };
     f.lo = lo; f.hi = hi;
     return f;
+  }
+
+  /* ===================================================================
+   * THE SEQUENTIAL RAMP — §2. Colour encodes the VALUE, never the identity.
+   *
+   * Two books with the same hold get the same colour; that is the difference between this
+   * and a categorical palette, and it is why §2's prohibition on the latter still stands.
+   * The stops are read from the page's own custom properties rather than hardcoded, so the
+   * ramp and the token table cannot drift.
+   * =================================================================== */
+
+  const RAMP = ["--ramp-lo", "--ramp-mid", "--ramp-hi"].map(function (name) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const h = v.replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  });
+
+  /* Piecewise between three stops. `t` is clamped, so a value at or past the ceiling takes
+   * the top colour rather than running off the end of the ramp. */
+  function rampColour(t) {
+    const u = t < 0 ? 0 : (t > 1 ? 1 : t);
+    const seg = u < 0.5 ? 0 : 1;
+    const f = seg === 0 ? u * 2 : (u - 0.5) * 2;
+    const a = RAMP[seg], b = RAMP[seg + 1];
+    const mix = [0, 1, 2].map(function (i) { return Math.round(a[i] + (b[i] - a[i]) * f); });
+    return "rgb(" + mix.join(",") + ")";
+  }
+
+  /* Where a value sits on the ramp, given the pane's own extent. Returned separately from
+   * the colour so a test can read the POSITION back and check it is monotone in the value —
+   * an assertion that uses none of the ramp's own constants. */
+  function rampPosition(value, lo, hi) {
+    if (!(hi > lo)) return 0;
+    const t = (value - lo) / (hi - lo);
+    return t < 0 ? 0 : (t > 1 ? 1 : t);
+  }
+
+  /* ===================================================================
+   * THE p95 CEILING — §9. A scale spent on its own tail.
+   *
+   * Measured over the fixture's 48 panels: the bulk of each pane, min to p95, occupies a
+   * MEDIAN 44% of the drawn range and under 60% in every one of them. More than half the
+   * height goes to the top few percent of books, and the twenty books a reader is actually
+   * comparing are pressed into the bottom half.
+   *
+   * The ceiling is applied only when the tail would otherwise eat more than a quarter of
+   * the range. That is a rule about wasted RANGE, not an arbitrary ratio between values: a
+   * pane whose top book merely leads does not get chrome it has no use for.
+   *
+   * A clipped value is not hidden. The mark is drawn at the ceiling, cut with a break, and
+   * LABELLED with its true number — so the pane says "this runs past here, by this much"
+   * rather than quietly lying about where the top is.
+   * =================================================================== */
+
+  const CLIP_Q = 0.95;        /* the quantile the ceiling sits at */
+  const CLIP_MIN_WASTE = 0.25; /* apply it only when the tail costs more than this share */
+
+  function quantile(sorted, q) {
+    if (!sorted.length) return 0;
+    let i = Math.round(q * (sorted.length - 1));
+    if (i < 0) i = 0;
+    if (i >= sorted.length) i = sorted.length - 1;
+    return sorted[i];
+  }
+
+  /* Returns the bound for ONE tail, or null for "this tail costs nothing, draw it".
+   *
+   * Each tail is judged on its own. A symmetric ceiling taken on |value| was the first
+   * version and it was wrong in a way that looked principled: a series that carries a zero
+   * line but whose values are all one sign got a domain of [-c, +c], which put every mark
+   * in half the pane and left the other half empty. It replaced a compressed chart with a
+   * differently compressed chart. Caught by measuring the ink extent against the pane
+   * frame, which is the same measurement that motivated the ceiling. */
+  function tailBound(values, upper) {
+    if (values.length < 5) return null;
+    const s = values.slice().sort(function (a, b) { return a - b; });
+    const c = upper ? quantile(s, CLIP_Q) : quantile(s, 1 - CLIP_Q);
+    const far = upper ? s[s.length - 1] : s[0];
+    const near = upper ? s[0] : s[s.length - 1];
+    if (upper ? !(far > c) : !(far < c)) return null;
+    const span = Math.abs(near - far);
+    if (!(span > 0)) return null;
+    if (Math.abs(far - c) / span <= CLIP_MIN_WASTE) return null;
+    return c;
   }
 
   const pct = function (v) { return typeof v === "number" ? (v * 100).toFixed(2) + "%" : "—"; };
@@ -1452,7 +1688,7 @@ var Gamma = (function () {
   let crossNodes = null;
 
   function paneFrame(i, n) {
-    const usable = H - AXIS_H - 6;
+    const usable = H - axisH() - 6;
     const each = (usable - (n - 1) * PANE_GAP) / n;
     const top = 4 + i * (each + PANE_GAP);
     return { top: top, bot: top + each, h: each };
@@ -1468,11 +1704,15 @@ var Gamma = (function () {
       zero: mk(g, "line", { class: "zero", visibility: "hidden" }),
       lk: mk(g, "text", { class: "legend-k" }, sdef.label.toUpperCase()),
       lv: mk(g, "text", { class: "legend-v" }, ""),
-      hi: mk(g, "text", { class: "tick", "text-anchor": "start" }, ""),
-      lo: mk(g, "text", { class: "tick", "text-anchor": "start" }, ""),
-      up: mk(g, "text", { class: "pane-btn", "data-move": "up:" + key }, "▲"),
-      down: mk(g, "text", { class: "pane-btn", "data-move": "down:" + key }, "▼"),
-      close: mk(g, "text", { class: "pane-btn", "data-move": "off:" + key }, "✕"),
+      hi: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
+      lo: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
+      cap: mk(g, "text", { class: "cap-note", "text-anchor": "end" }, ""),
+      up: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
+                          "data-move": "up:" + key }, "▲"),
+      down: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
+                            "data-move": "down:" + key }, "▼"),
+      close: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
+                             "data-move": "off:" + key }, "✕"),
       marks: {}
     };
     paneNodes[key] = node;
@@ -1487,6 +1727,11 @@ var Gamma = (function () {
       dot2: registerMark(book, mk(g, "circle", { cx: 0, cy: 0, r: 4, class: "dot" })),
       link: registerMark(book, mk(g, "line", { class: "link" })),
       bar: registerMark(book, mk(g, "rect", { x: 0, y: 0, width: 0, height: 7, class: "bar" })),
+      /* Created once with everything else, hidden unless the mark is clipped. A break that
+       * appears by creating a node would be a rebuild on arrival, which is F28. */
+      brk: mk(g, "path", { class: "brk", visibility: "hidden" }),
+      blab: mk(g, "text", { class: "clip-val", "text-anchor": "middle",
+                            visibility: "hidden" }, ""),
       hit: registerMark(book, mk(g, "rect", { class: "hit-col" }))
     };
     for (const k in m) m[k].__pane = node.key;
@@ -1528,6 +1773,11 @@ var Gamma = (function () {
   }
 
   function updateBookMode(board) {
+    /* The axis is drawn FIRST because the pane frames are laid out against its height, and
+     * that height is now a measurement of the labels rather than a constant. Drawing it
+     * last would lay the panes out against the previous frame's strip — right on every
+     * draw but the first, which is the shape of a bug that hides in a redraw. */
+    drawBookAxis();
     const n = activePanes().length;
     activePanes().forEach(function (key, i) {
       const node = paneNodes[key];
@@ -1537,8 +1787,28 @@ var Gamma = (function () {
       node.series = series;
 
       const ys = series.points.map(function (pt) { return pt.y; });
-      if (series.zero) ys.push(0);
-      const y = linear(ys, f.bot - 10, f.top + 22);
+      /* The ceiling is taken over the VALUES, before zero is folded in: a signed series
+       * whose points all sit near zero must not have its tail measured against a bound the
+       * axis added. */
+      const clippable = series.form !== "line" && series.form !== "cells";
+      const capHi = clippable ? tailBound(ys, true) : null;
+      const capLo = clippable ? tailBound(ys, false) : null;
+      const cap = capHi !== null || capLo !== null;
+      /* What a clipped point is drawn AT. One function, used by the geometry, by the ramp
+       * and by the break, so the three cannot disagree about where the bounds are. */
+      const clamp = function (v) {
+        if (capHi !== null && v > capHi) return capHi;
+        if (capLo !== null && v < capLo) return capLo;
+        return v;
+      };
+      const isOver = function (v) { return clamp(v) !== v; };
+      const nOver = ys.filter(isOver).length;
+      node.capHi = capHi; node.capLo = capLo; node.nOver = nOver;
+      /* The domain is the CLAMPED values, so an unclipped tail keeps the range it had and
+       * the zero line stays wherever the data puts it. */
+      const domain = ys.map(clamp);
+      if (series.zero) domain.push(0);
+      const y = linear(domain, f.bot - 10, f.top + 22, cap);
       node.y = y;
 
       node.base.setAttribute("x1", PAD_L); node.base.setAttribute("x2", W - PAD_R);
@@ -1552,13 +1822,18 @@ var Gamma = (function () {
       }
       node.lk.setAttribute("x", 4); node.lk.setAttribute("y", f.top + 12);
       node.lv.setAttribute("x", 4); node.lv.setAttribute("y", f.top + 28);
-      node.hi.setAttribute("x", W - PAD_R + 10); node.hi.setAttribute("y", f.top + 26);
-      node.lo.setAttribute("x", W - PAD_R + 10); node.lo.setAttribute("y", f.bot);
+      node.hi.setAttribute("x", W - SCALE_X); node.hi.setAttribute("y", f.top + 26);
+      node.lo.setAttribute("x", W - SCALE_X); node.lo.setAttribute("y", f.bot);
       node.hi.textContent = series.fmt(y.hi);
       node.lo.textContent = series.fmt(y.lo);
-      node.up.setAttribute("x", W - 26); node.up.setAttribute("y", f.top + 12);
-      node.down.setAttribute("x", W - 26); node.down.setAttribute("y", f.top + 26);
-      node.close.setAttribute("x", W - 26); node.close.setAttribute("y", f.top + 40);
+      node.cap.setAttribute("x", W - SCALE_X); node.cap.setAttribute("y", f.top + 42);
+      node.cap.textContent = !cap ? "" : (
+        (capHi !== null && capLo !== null ? "p5/p95" : (capHi !== null ? "p95" : "p5"))
+        + " · " + nOver);
+      node.cap.setAttribute("visibility", cap ? "visible" : "hidden");
+      node.up.setAttribute("x", W - BTN_X); node.up.setAttribute("y", f.top + 12);
+      node.down.setAttribute("x", W - BTN_X); node.down.setAttribute("y", f.top + 26);
+      node.close.setAttribute("x", W - BTN_X); node.close.setAttribute("y", f.top + 40);
       node.close.setAttribute("visibility", n > 1 ? "visible" : "hidden");
 
       /* A TIME series is not one mark per domain member: it is one PATH per book across
@@ -1567,7 +1842,7 @@ var Gamma = (function () {
        * addition the time family needed. The axis, the crosshair, the sort control, the
        * pane frames and the selection all took the new domain unchanged. */
       if (series.form === "line") {
-        drawLinePane(node, series, y);
+        drawLinePane(node, series, y, board);
         return;
       }
       if (series.form === "cells") {
@@ -1575,11 +1850,41 @@ var Gamma = (function () {
         return;
       }
 
+      /* The ramp's domain is the pane's own value extent, so each pane encodes its own
+       * spread rather than an absolute scale shared with a quantity it has nothing to do
+       * with. The reference is excluded from neither: it takes the accent regardless. */
+      let rampLo = Infinity, rampHi = -Infinity;
+      series.points.forEach(function (pt) {
+        if (pt.withheld) return;
+        const v = clamp(pt.y);
+        if (v < rampLo) rampLo = v;
+        if (v > rampHi) rampHi = v;
+      });
+      node.rampLo = rampLo; node.rampHi = rampHi;
+
       const seen = {};
       series.points.forEach(function (pt) {
         seen[pt.book] = true;
         const m = paneMark(node, pt.book);
         const x = xOfIndex(rankOf[pt.book]);
+        /* §2: the reference is an ANCHOR, not a magnitude. Everything else is its value. */
+        const vy = clamp(pt.y);
+        const paint = pt.isRef
+          ? "var(--accent)"
+          : rampColour(rampPosition(vy, rampLo, rampHi));
+        const tpos = pt.isRef ? "" : rampPosition(vy, rampLo, rampHi).toFixed(6);
+        /* INLINE STYLE, not a presentation attribute. A CSS rule beats an attribute, so
+         * `circle.dot { fill: var(--data) }` silently overrode every ramp colour — the
+         * attribute was set correctly and the browser painted the token. Caught by reading
+         * getComputedStyle back rather than the attribute, which is the whole reason the
+         * assertion reads the computed fill. The `is-sel` rules carry `!important` so the
+         * accent still wins over these. Second instance of this in one step; the first was
+         * the analytical curves. */
+        [m.dot, m.dot2, m.bar].forEach(function (el) {
+          el.style.setProperty("fill", paint);
+          el.setAttribute("data-ramp", tpos);
+        });
+        m.link.style.setProperty("stroke", paint);
         const show = function (el, on) {
           el.setAttribute("visibility", on ? "visible" : "hidden");
         };
@@ -1590,20 +1895,57 @@ var Gamma = (function () {
         } else if (series.form === "bar") {
           show(m.bar, !pt.withheld); show(m.dot, false); show(m.dot2, false);
           show(m.link, false);
-          const y0 = y(0), y1 = y(pt.y);
+          const y0 = y(0), y1 = y(vy);
           m.bar.setAttribute("x", x - 3.5);
           m.bar.setAttribute("width", 7);
           m.bar.setAttribute("y", Math.min(y0, y1));
           m.bar.setAttribute("height", Math.max(Math.abs(y1 - y0), 1));
         } else if (series.form === "dumbbell") {
           show(m.bar, false); show(m.dot, true); show(m.dot2, true); show(m.link, true);
-          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(pt.y));
-          m.dot2.setAttribute("cx", x); m.dot2.setAttribute("cy", y(pt.y2));
+          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
+          m.dot2.setAttribute("cx", x); m.dot2.setAttribute("cy", y(clamp(pt.y2)));
           m.link.setAttribute("x1", x); m.link.setAttribute("x2", x);
-          m.link.setAttribute("y1", y(pt.y)); m.link.setAttribute("y2", y(pt.y2));
+          m.link.setAttribute("y1", y(vy)); m.link.setAttribute("y2", y(clamp(pt.y2)));
         } else {
           show(m.bar, false); show(m.dot, true); show(m.dot2, false); show(m.link, false);
-          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(pt.y));
+          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
+        }
+
+        /* THE BREAK. A clipped mark is cut and labelled with the number it really holds.
+         * Both nodes exist from the pane's first draw and are only shown or hidden, so a
+         * value crossing the ceiling on an arrival moves geometry rather than adding
+         * nodes. The glyph is drawn in the page colour over the mark and outlined in the
+         * rule colour, which is what makes it read as a cut rather than as decoration. */
+        const overA = isOver(pt.y);
+        const overB = pt.y2 !== undefined && isOver(pt.y2);
+        if (!pt.withheld && (overA || overB)) {
+          const trueV = overA ? pt.y : pt.y2;
+          const py = y(clamp(trueV));
+          const up = trueV > clamp(trueV);
+          /* A bar is CUT: the break is drawn in the page colour across the mark, which is
+           * what makes a bar read as continuing past the frame. A dot cannot be cut — a
+           * page-coloured stroke across a 4px dot erases the mark instead of breaking it,
+           * which is what the first version did — so a dot gets a caret ABOVE it, in the
+           * mark's own colour, pointing the way the value runs. */
+          const cut = series.form === "bar" || series.form === "dumbbell";
+          /* The cut sits INSIDE the bar, not on its tip: a break drawn at the very top
+           * edge only nicks it and reads as a rendering artefact rather than as a break. */
+          const gy = cut ? py + (up ? 8 : -8) : py + (up ? -9 : 9);
+          const d = up ? 3 : -3;
+          m.brk.setAttribute("d",
+            "M " + (x - 7) + " " + (gy + d) + " L " + (x - 2) + " " + (gy - d) +
+            " L " + (x + 2) + " " + (gy + d) + " L " + (x + 7) + " " + (gy - d));
+          /* Set through style, not as an attribute: `path.brk`'s own rule would win. */
+          m.brk.style.setProperty("stroke", cut ? "var(--page)" : paint);
+          m.brk.style.setProperty("stroke-width", cut ? "3.5" : "1.6");
+          m.brk.setAttribute("visibility", "visible");
+          m.blab.setAttribute("x", x);
+          m.blab.setAttribute("y", up ? gy - 7 : gy + 14);
+          m.blab.textContent = series.fmt(trueV);
+          m.blab.setAttribute("visibility", "visible");
+        } else {
+          m.brk.setAttribute("visibility", "hidden");
+          m.blab.setAttribute("visibility", "hidden");
         }
       });
       for (const book in node.marks) {
@@ -1613,14 +1955,24 @@ var Gamma = (function () {
         }
       }
     });
-    drawBookAxis();
     drawLegend();
   }
 
   /* One path per series, keyed by book, `d` reassigned on arrival. The nodes are created
    * once, exactly like the per-member marks, so an arriving row moves geometry and replaces
    * nothing. */
-  function drawLinePane(node, series, y) {
+  function drawLinePane(node, series, y, board) {
+    /* The ramp's domain over a line pane is the extent of the per-book MEANS, not of every
+     * point: a pane is coloured by which books sit high, not by which instants do. */
+    let lo = Infinity, hi = -Infinity;
+    series.lines.forEach(function (ln) {
+      let sum = 0;
+      ln.points.forEach(function (pt) { sum += pt.y; });
+      const mean = sum / ln.points.length;
+      if (mean < lo) lo = mean;
+      if (mean > hi) hi = mean;
+    });
+    series.rampLo = lo; series.rampHi = hi;
     const seen = {};
     series.lines.forEach(function (ln) {
       seen[ln.book] = true;
@@ -1639,6 +1991,15 @@ var Gamma = (function () {
       m.hit.setAttribute("d", d);
       m.path.setAttribute("visibility", "visible");
       m.hit.setAttribute("visibility", "visible");
+      /* A line's value is its mean over the domain: one number per book, so the same ramp
+       * applies and a pane of twenty lines is readable without tracing each one. */
+      let sum = 0;
+      ln.points.forEach(function (pt) { sum += pt.y; });
+      const mean = sum / ln.points.length;
+      const isRef = board && ln.book === board.referenceBook;
+      const t = rampPosition(mean, series.rampLo, series.rampHi);
+      m.path.style.setProperty("stroke", isRef ? "var(--accent)" : rampColour(t));
+      m.path.setAttribute("data-ramp", isRef ? "" : t.toFixed(6));
     });
     for (const book in node.marks) {
       if (!seen[book]) {
@@ -1685,22 +2046,66 @@ var Gamma = (function () {
     while (axisNodes.ticks.length < bookOrder.length) {
       axisNodes.ticks.push(mk(stage, "text", { class: "tick", "text-anchor": "middle" }, ""));
     }
+    const ref = referenceBook();
     axisNodes.ticks.forEach(function (t, i) {
       if (i >= bookOrder.length) { t.setAttribute("visibility", "hidden"); return; }
       t.setAttribute("visibility", "visible");
-      t.setAttribute("x", xOfIndex(i));
-      t.setAttribute("y", H - 8);
+      const x = xOfIndex(i);
       /* In TIME the tick is a clock reading, and only every fifth is drawn so sixty of them
        * do not overlap into the illegibility §3 exists to prevent. */
       if (domainKind === FAM.TIME) {
         const frames = timeFrames();
         const fr = frames[i];
+        t.setAttribute("x", x); t.setAttribute("y", H - 8);
+        t.setAttribute("text-anchor", "middle");
+        t.setAttribute("transform", "");
+        t.setAttribute("class", "tick");
         t.textContent = (fr && (i % 5 === 0 || i === bookOrder.length - 1))
           ? fr.at.slice(11, 16) : "";
       } else {
-        t.textContent = String(i + 1);
+        /* A rank number told the reader nothing: it named the position they could already
+         * see and withheld the identity they came for. The name is rotated because twenty
+         * of them do not fit across the axis horizontally — measured, not assumed — and it
+         * reads upward from the axis, which is where a dense categorical axis puts it.
+         * `text-anchor: start` is load-bearing: under rotate(-90) the string runs from the
+         * anchor in +x, which is upward. With `end` it would run off the bottom. */
+        const ay = H - 6;
+        t.setAttribute("x", x); t.setAttribute("y", ay);
+        t.setAttribute("text-anchor", "start");
+        t.setAttribute("transform", "rotate(-90 " + x + " " + ay + ")");
+        t.setAttribute("class", bookOrder[i] === ref ? "tick tick-ref" : "tick");
+        t.textContent = bookOrder[i];
       }
     });
+    /* Room for the labels, the crosshair badge above them, and a margin — but never more
+     * than a share of the viewport. A strip sized purely by the longest book name is right
+     * on a desktop and wrong on a short window: at 600px it took 40% of the stage and left
+     * the panes 33px each, which collapsed every bar to the 1px floor. Caught by the panel
+     * test measuring bar LENGTHS, which is a check written for a different defect entirely.
+     *
+     * Over budget, the names are truncated rather than replaced by rank numbers: a prefix
+     * still identifies, and the crosshair badge carries the full name on hover. */
+    if (domainKind !== FAM.TIME) {
+      const budget = Math.max(
+        24, Math.min(AXIS_MAX, Math.round(H * 0.26)) - AXIS_BADGE - AXIS_PAD);
+      let ext = labelExtent(axisNodes.ticks);
+      if (ext > budget) {
+        let chars = 1;
+        axisNodes.ticks.forEach(function (t) {
+          const n = (t.textContent || "").length;
+          if (n > chars) chars = n;
+        });
+        const per = ext / chars;
+        const fit = Math.max(3, Math.floor(budget / per) - 1);
+        axisNodes.ticks.forEach(function (t, i) {
+          const full = i < bookOrder.length ? bookOrder[i] : "";
+          t.textContent = full.length > fit ? full.slice(0, fit) + "…" : full;
+        });
+        ext = labelExtent(axisNodes.ticks);
+      }
+      axisBookH = Math.max(AXIS_MIN + AXIS_BADGE,
+                           Math.ceil(ext + AXIS_BADGE + AXIS_PAD));
+    }
   }
 
   /* One crosshair, one x, every pane. It snaps to a book's rank rather than following the
@@ -1715,12 +2120,12 @@ var Gamma = (function () {
     const book = bookOrder[best];
     const px = xOfIndex(best);
     crossNodes.line.setAttribute("x1", px); crossNodes.line.setAttribute("x2", px);
-    crossNodes.line.setAttribute("y1", 0); crossNodes.line.setAttribute("y2", H - AXIS_H);
+    crossNodes.line.setAttribute("y1", 0); crossNodes.line.setAttribute("y2", H - axisH());
     crossNodes.line.setAttribute("visibility", "visible");
-    crossNodes.bg.setAttribute("x", px - 44); crossNodes.bg.setAttribute("y", H - AXIS_H + 2);
+    crossNodes.bg.setAttribute("x", px - 44); crossNodes.bg.setAttribute("y", H - axisH() + 2);
     crossNodes.bg.setAttribute("width", 88);
     crossNodes.bg.setAttribute("visibility", "visible");
-    crossNodes.tx.setAttribute("x", px); crossNodes.tx.setAttribute("y", H - AXIS_H + 14);
+    crossNodes.tx.setAttribute("x", px); crossNodes.tx.setAttribute("y", H - axisH() + 14);
     crossNodes.tx.setAttribute("visibility", "visible");
     if (domainKind === FAM.TIME) {
       const fr = timeFrames()[best];
@@ -1875,7 +2280,7 @@ var Gamma = (function () {
   }
 
   function frame() {
-    return { x0: PAD_L, x1: W - PAD_R, y0: 34, y1: H - AXIS_H - 22 };
+    return { x0: PAD_L, x1: W - PAD_R, y0: 34, y1: H - axisH() - 22 };
   }
 
   /* THE OVERLAY ACCESSOR — one computation, read by every panel that plots a book against
@@ -1895,6 +2300,15 @@ var Gamma = (function () {
     const bandH = two ? (f.y1 - f.y0 - 54) / 2 : (f.y1 - f.y0);
     const b1 = { top: f.y0, bot: f.y0 + bandH };
     const b2 = { top: f.y0 + bandH + 54, bot: f.y1 };
+    /* The slope panel's lines are coloured by HOLD, which is what the convergence is about:
+     * a line that starts far left and lands with the bundle is a book whose margin was the
+     * distance. Same ramp, same rule. */
+    let holdLo = Infinity, holdHi = -Infinity;
+    everyQuote(board).forEach(function (q) {
+      if (q.fair === null) return;
+      if (q.hold < holdLo) holdLo = q.hold;
+      if (q.hold > holdHi) holdHi = q.hold;
+    });
     const place = function (quotes, band, off) {
       if (!quotes.length) return;
       const vals = [];
@@ -1914,7 +2328,15 @@ var Gamma = (function () {
             path: soloMark(q.book, mk(g, "path", { d: d, class: cls })),
             hit: soloMark(q.book, mk(g, "path", { d: d, class: "hit" }))
           };
-        } else if (soloNodes[q.book]) {
+        }
+        if (soloNodes[q.book]) {
+          const isRef = q.book === board.referenceBook;
+          const t = rampPosition(q.hold, holdLo, holdHi);
+          soloNodes[q.book].path.style.setProperty(
+            "stroke", isRef ? "var(--accent)" : rampColour(t));
+          soloNodes[q.book].path.setAttribute("data-ramp", isRef ? "" : t.toFixed(6));
+        }
+        if (!layer.fresh && soloNodes[q.book]) {
           soloNodes[q.book].path.setAttribute("d", d);
           soloNodes[q.book].hit.setAttribute("d", d);
         }
@@ -1933,8 +2355,10 @@ var Gamma = (function () {
       }
       stale.forEach(function (n) { g.removeChild(n); });
     }
-    mk(g, "text", { x: 4, y: b1.top - 14, class: "band-label" }, "COMPARABLE");
-    mk(g, "text", { x: 4, y: b1.top - 2, class: "band-sub" },
+    /* 12px apart for 11px text put the two boxes one pixel into each other. Found by
+     * comparing rectangles across every mode, not by looking at it. */
+    mk(g, "text", { x: 4, y: b1.top - 18, class: "band-label" }, "COMPARABLE");
+    mk(g, "text", { x: 4, y: b1.top - 3, class: "band-sub" },
        board.matched.length
          ? board.referenceBook + " + " + board.matched.length + " on " +
            (board.referenceLine === null ? "no line" : board.referenceLine)
@@ -1946,16 +2370,18 @@ var Gamma = (function () {
         const v = q.line === null ? "—" : String(q.line);
         if (lines.indexOf(v) === -1) lines.push(v);
       });
-      mk(g, "text", { x: 4, y: b2.top - 14, class: "band-label" }, "OFF THE LINE");
-      mk(g, "text", { x: 4, y: b2.top - 2, class: "band-warn" },
+      mk(g, "text", { x: 4, y: b2.top - 18, class: "band-label" }, "OFF THE LINE");
+      mk(g, "text", { x: 4, y: b2.top - 3, class: "band-warn" },
          board.off_line.length + " book" + (board.off_line.length === 1 ? "" : "s") +
          " on " + lines.join(", ") + ", a different bet, never compared (B6)");
     }
-    mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label", "text-anchor": "middle" }, "IMPLIED");
-    mk(g, "text", { x: f.x1, y: H - 20, class: "ax-label", "text-anchor": "middle" }, "FAIR");
+    mk(g, "text", { x: f.x0, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "IMPLIED");
+    mk(g, "text", { x: f.x1, y: H - 26, class: "ax-label", "text-anchor": "middle" }, "FAIR");
     /* §8: exchanges appear in neither band and are LABELLED as excluded. The note lived on a
-     * separate element under the old scroller; in one viewport it belongs in the panel. */
-    mk(g, "text", { x: 4, y: H - 20, class: "excl-note" },
+     * separate element under the old scroller; in one viewport it belongs in the panel.
+     * It sits on its OWN line: it is five hundred pixels wide and it ran straight through
+     * the axis label that shares the row. */
+    mk(g, "text", { x: 4, y: H - 8, class: "excl-note" },
        board.exchanges.length
          ? board.exchanges.length + " exchange quote" +
            (board.exchanges.length === 1 ? "" : "s") +
@@ -2028,11 +2454,21 @@ var Gamma = (function () {
     series.forEach(function (sr, i) {
       let d = "";
       ps.forEach(function (pp, j) { d += (j ? " L " : "M ") + x(pp) + " " + y(sr.ys[j]); });
-      mk(g, "path", { d: d, class: "mark analytic-line", "data-method": sr.m.key });
+      /* §2's carve-out. Assigned by INDEX into a fixed list, so the family cannot silently
+       * become categorical for a data entity: there are four tokens and four methods. */
+      const hue = "var(--fam-" + (i + 1) + ")";
+      /* NOT class "mark": a CSS rule beats a presentation attribute, so `path.mark`'s
+       * stroke was overriding the family hue set here. These curves are also not hoverable
+       * marks — nothing selects them — so the class was wrong on both counts. */
+      const curve = mk(g, "path", { d: d, class: "analytic-line",
+                                    "data-method": sr.m.key });
+      curve.style.setProperty("stroke", hue);
       /* §7's carve-out: these are METHODS, nothing hovers them, so identity comes from a
        * stacked legend inside the plot rather than from endpoint labels that would overlap. */
       const ly = f.y0 + 8 + i * 16;
-      mk(g, "line", { x1: f.x0 + 8, y1: ly, x2: f.x0 + 26, y2: ly, class: "mark analytic-line" });
+      const swatch = mk(g, "line", { x1: f.x0 + 8, y1: ly, x2: f.x0 + 26, y2: ly,
+                                     class: "analytic-line", "data-swatch": sr.m.key });
+      swatch.style.setProperty("stroke", hue);
       mk(g, "text", { x: f.x0 + 32, y: ly + 3.5, class: "legend-k" }, sr.m.label.toUpperCase());
       mk(g, "text", { x: f.x0 + 190, y: ly + 3.5, class: "tick" }, sr.m.note);
     });
@@ -2428,15 +2864,6 @@ var Gamma = (function () {
     selection: function () { return { selected: selected, locked: locked }; },
     crosshairAt: function (vx) { return crosshairAt(vx); },
     registry: function () {
-      return REGISTRY.map(function (s) {
-        return { key: s.key, label: s.label, quantity: s.quantity, unit: s.unit,
-                 axis: s.axis, panel: s.panel, status: s.status, why: s.why || null };
-      });
-    },
-    pick: function (book, lock) { pick(book, lock); },
-    selection: function () { return { selected: selected, locked: locked }; },
-    crosshairAt: function (vx) { return crosshairAt(vx); },
-    registry: function () {
       return REGISTRY.map(function (sd) {
         return { key: sd.key, label: sd.label, family: sd.family, quantity: sd.quantity,
                  unit: sd.unit, axis: sd.axis, form: sd.form || null, status: sd.status,
@@ -2446,6 +2873,25 @@ var Gamma = (function () {
     },
     mustSeries: function (key) { return mustSeries(key).key; },
     panes: function () { return activePanes().slice(); },
+    /* The ceiling, and the values it was computed from. Exposed so a test can derive the
+     * clipped SET independently and compare — a check that read only the count could not
+     * tell a correct ceiling from one that clipped the wrong books. */
+    paneScale: function (key) {
+      const node = paneNodes[key];
+      if (!node || !node.series) return null;
+      return {
+        capHi: node.capHi === undefined ? null : node.capHi,
+        capLo: node.capLo === undefined ? null : node.capLo,
+        nOver: node.nOver || 0,
+        lo: node.y ? node.y.lo : null,
+        hi: node.y ? node.y.hi : null,
+        zero: !!node.series.zero,
+        form: node.series.form || "dot",
+        points: (node.series.points || []).map(function (pt) {
+          return { book: pt.book, y: pt.y, y2: pt.y2 === undefined ? null : pt.y2 };
+        })
+      };
+    },
     bookPanes: function () { return bookPanes.slice(); },
     mode: function () {
       return { mode: mode, solo: soloKey, sort: sortKey, domain: domainKind };
@@ -2476,7 +2922,9 @@ var Gamma = (function () {
   };
 
   /* Bound ONCE, to containers that outlive every redraw. Nothing in a draw function calls
-   * addEventListener; the structural check in test_live_selection.py enforces that. */
+   * addEventListener; the structural check in test_live_terminal.py enforces that. The
+   * assertion moved when test_live_selection.py was retired into it; the name here did
+   * not, which is a comment that would have sent the next reader to a missing file. */
   bindSelection($("stage"));
   $("stage").addEventListener("pointermove", function (e) {
     if (mode !== FAM.BOOK) return;
