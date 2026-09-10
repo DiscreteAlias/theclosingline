@@ -230,8 +230,16 @@
   line.link.is-dim { opacity: var(--dim-alpha); }
 
   .axis { stroke: var(--rule); stroke-width: 1; }
+  /* §6's gridline. Quieter than the axis it hangs from — `--hairline`, the same token the
+     shell dividers use — because a gridline exists to let the eye carry a tick across the
+     panel and stops being useful the moment it competes with the marks. */
+  .grid { stroke: var(--hairline); stroke-width: 1; }
   .zero { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
   .crosshair { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
+  /* The standalone reticle crosses a SATURATED surface, where the faint token disappears —
+     measured on the regime map, where a 2.56:1 dashed line over a 0.82-opacity margin fill
+     is not findable. The book crosshair keeps the quiet token: it crosses a dark plot. */
+  .reticle { stroke: var(--primary); opacity: .55; }
 
   .ax-label { font: 11px var(--sans); fill: var(--muted); }
   .tick { font: 11px var(--mono); fill: var(--muted); }
@@ -241,6 +249,7 @@
      accent so the anchor is findable in the label row as well as in the marks. */
   .tick-ref { fill: var(--accent); }
   .cap-note { font: 11px var(--mono); fill: var(--muted); }
+  .note { font: 11px var(--sans); fill: var(--muted); }
   /* The break: page-coloured, so it cuts the mark rather than sitting on it. */
   path.brk { fill: none; stroke: var(--page); stroke-width: 3.5; }
   .clip-val { font: 11px var(--mono); fill: var(--primary); }
@@ -259,7 +268,12 @@
   .badge-tx { font: 11px var(--sans); fill: var(--page); }
   .badge-num { font: 11px var(--mono); fill: var(--page); }
   /* §2's carve-out: a fixed family takes hues, assigned by index at draw time. */
-  path.analytic-line { stroke-width: 1.4; opacity: .95; }
+  /* `fill: none` is load-bearing and it was LOST. These curves carried class `mark` until
+     step (f), and `path.mark` supplied the fill; dropping that class to stop its stroke
+     overriding the family hue took the fill with it, and an open path defaults to filled
+     black. The result is a black wedge between the curves — visible, unremarked, shipped.
+     Third time a class change has removed a property nobody was looking at (F36, F42). */
+  path.analytic-line { fill: none; stroke-width: 1.4; opacity: .95; }
   line.analytic-line { stroke-width: 2; }
   circle.overlay { stroke: var(--page); stroke-width: 1; }
 
@@ -1193,6 +1207,7 @@ var Gamma = (function () {
         els[i].classList.toggle("is-dim", selected !== null && !isSel);
       }
     }
+    placeSeriesLabel();
     drawLegend();
   }
 
@@ -1575,6 +1590,17 @@ var Gamma = (function () {
     return [lo, hi];
   }
 
+  /* An EXACT domain, for a scale whose bounds were chosen rather than measured. `linear`
+   * pads by 18% because it derives its bounds from the data; a nice-snapped domain has
+   * already been rounded outward and padding it again would put the outermost tick inside
+   * the panel with empty space beyond it. */
+  function linearExact(lo, hi, lo_px, hi_px) {
+    const span = (hi - lo) || 1;
+    const f = function (v) { return lo_px + ((v - lo) / span) * (hi_px - lo_px); };
+    f.lo = lo; f.hi = hi;
+    return f;
+  }
+
   function linear(values, lo_px, hi_px, tight) {
     const e = extent(values);
     /* A capped scale is drawn EXACTLY to its bounds: padding above a ceiling would reopen
@@ -1670,6 +1696,160 @@ var Gamma = (function () {
     if (!(span > 0)) return null;
     if (Math.abs(far - c) / span <= CLIP_MIN_WASTE) return null;
     return c;
+  }
+
+  /* ===================================================================
+   * ONE Y-SCALE, drawn the same way for a pane and for a standalone panel.
+   *
+   * Before this there were five implementations: one in the pane renderer, shared by every
+   * book and time pane, and one in each standalone draw function — three of which drew no
+   * scale at all. Nothing was violated, because the standalone family had no shared
+   * contract to violate, and every panel was internally consistent. That is why three
+   * panel types shipped with no readable y axis and nobody could see it from any one of
+   * them. Same shape as F40: a discipline the pane family had, that the other family was
+   * never held to.
+   * =================================================================== */
+
+  /* Round numbers a reader can use, rather than the data's own bounds. `1, 2, 2.5, 5` are
+   * the steps that keep a decimal axis legible at any magnitude. */
+  const NICE_STEPS = [1, 2, 2.5, 5, 10];
+
+  function niceStep(span, want) {
+    if (!(span > 0)) return 1;
+    const raw = span / Math.max(1, want);
+    const mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    for (let i = 0; i < NICE_STEPS.length; i += 1) {
+      if (NICE_STEPS[i] * mag >= raw) return NICE_STEPS[i] * mag;
+    }
+    return 10 * mag;
+  }
+
+  /* §6's density: one line per ~70px of band, clamped to 2..6 intervals. Below two a
+   * reader has no interval to interpolate within; above six the lines start competing
+   * with the marks they exist to help read. */
+  const GRID_PX = 70, GRID_MIN = 2, GRID_MAX = 6;
+
+  function wantTicks(bandPx) {
+    const n = Math.round(Math.abs(bandPx) / GRID_PX);
+    return n < GRID_MIN ? GRID_MIN : (n > GRID_MAX ? GRID_MAX : n);
+  }
+
+  /* The domain, snapped OUTWARD to step boundaries. Outward rather than inward is what
+   * makes the axis contain its data — the property the bracket assertion checks.
+   *
+   * It searches the whole nice-step ladder and takes the step with the LEAST added
+   * headroom among those that keep the interval count inside §6's density bounds. The
+   * first version took the step straight from a target count, which snapped a p95 ceiling
+   * of 7.64% up to a round 10% and handed back a third of the headroom the ceiling had
+   * just removed. A ceiling and a round axis are both about how the range is spent, and
+   * choosing the step by count alone lets one undo the other. */
+  function niceDomain(lo, hi, want) {
+    if (!(hi > lo)) return { lo: lo - 0.5, hi: lo + 0.5, step: 1, slack: 0 };
+    const span = hi - lo;
+    const mag0 = Math.pow(10, Math.floor(Math.log(span) / Math.LN10));
+    let best = null;
+    for (let m = mag0 / 100; m <= mag0 * 10; m *= 10) {
+      for (let i = 0; i < NICE_STEPS.length; i += 1) {
+        const step = NICE_STEPS[i] * m;
+        if (!(step > 0) || !isFinite(step)) continue;
+        const d = {
+          lo: Math.floor(lo / step) * step,
+          hi: Math.ceil(hi / step) * step,
+          step: step
+        };
+        const n = Math.round((d.hi - d.lo) / step);
+        if (n < GRID_MIN || n > GRID_MAX) continue;
+        d.slack = ((d.hi - hi) + (lo - d.lo)) / span;
+        /* Ties go to the coarser step, which is the one already held: the ladder is walked
+         * fine to coarse, so a strict `<` keeps the first — and the first is the finest.
+         * `<=` would keep the coarsest at equal slack, which is the readable choice. */
+        if (!best || d.slack <= best.slack) best = d;
+      }
+    }
+    return best || { lo: lo, hi: hi, step: span / 2, slack: 0 };
+  }
+
+  function tickValues(dom) {
+    const out = [];
+    const eps = dom.step * 1e-9;
+    for (let v = dom.lo; v <= dom.hi + eps && out.length < 16; v += dom.step) {
+      out.push(Math.abs(v) < eps ? 0 : v);
+    }
+    return out;
+  }
+
+  /* A scale over a POPULATION of book values: p95-capped, then nice-snapped. Step (f)
+   * applied the ceiling only where it was looking, and 47 of this fixture's 48 panels earn
+   * one under its own rule — so the ceiling was never a property of the pane family, it
+   * was a property of the data.
+   *
+   * NOT for an analytic domain. The γ curves and the regime surface are evaluated over a
+   * grid the page chose; there is no tail to clip and a ceiling there would be cutting the
+   * page's own axis. That distinction is the reason this takes a population rather than
+   * being applied to every scale.
+   */
+  function bookScale(values, loPx, hiPx, opts) {
+    const zero = opts && opts.zero;
+    const capHi = tailBound(values, true);
+    const capLo = tailBound(values, false);
+    const clamp = function (v) {
+      if (capHi !== null && v > capHi) return capHi;
+      if (capLo !== null && v < capLo) return capLo;
+      return v;
+    };
+    const dom0 = values.map(clamp);
+    if (zero) dom0.push(0);
+    const dom = niceDomain(Math.min.apply(null, dom0), Math.max.apply(null, dom0),
+                           wantTicks(loPx - hiPx));
+    const y = linearExact(dom.lo, dom.hi, loPx, hiPx);
+    y.dom = dom; y.capHi = capHi; y.capLo = capLo; y.clamp = clamp;
+    y.nOver = values.filter(function (v) { return clamp(v) !== v; }).length;
+    return y;
+  }
+
+  /* Nodes created once and reassigned, like every other mark. `store` is whatever object
+   * owns the panel — a pane node or the solo layer — so the pool outlives an arrival. */
+  /* Pools that outlive an arrival, keyed by panel. A standalone layer object is rebuilt
+   * on every draw, so pooling on it pooled nothing. */
+  const axisPools = {};
+
+  function axisPool(name, fresh) {
+    if (fresh || !axisPools[name]) axisPools[name] = { grid: [], tick: [] };
+    return axisPools[name];
+  }
+
+  function drawYScale(pool, g, opts) {
+    /* A pane with no points has no domain, and `Math.min` over nothing is Infinity — which
+     * niceDomain happily turns into an axis labelled "Infinity%". A scale with nothing to
+     * measure draws nothing. */
+    const vals = (opts.ticks || []).filter(function (v) {
+      return typeof v === "number" && isFinite(v);
+    });
+    if (vals.length !== (opts.ticks || []).length) vals.length = 0;
+    while (pool.grid.length < vals.length) {
+      /* `__scale` marks these as chrome the panel's own text sweep must not collect —
+       * drawSlope removes every text node on a redraw, which deleted the ticks the frame
+       * they were created in. */
+      const ln = mk(g, "line", { class: "grid" });
+      const tx = mk(g, "text", { class: "tick y-tick", "text-anchor": "end" }, "");
+      ln.__scale = true; tx.__scale = true;
+      pool.grid.push(ln); pool.tick.push(tx);
+    }
+    pool.grid.forEach(function (ln, i) {
+      const t = pool.tick[i];
+      if (i >= vals.length) {
+        ln.setAttribute("visibility", "hidden");
+        t.setAttribute("visibility", "hidden");
+        return;
+      }
+      const py = opts.y(vals[i]);
+      ln.setAttribute("x1", opts.x0); ln.setAttribute("x2", opts.x1);
+      ln.setAttribute("y1", py); ln.setAttribute("y2", py);
+      ln.setAttribute("visibility", opts.grid === false ? "hidden" : "visible");
+      t.setAttribute("x", opts.xLabel); t.setAttribute("y", py + 3.5);
+      t.textContent = opts.fmt(vals[i]);
+      t.setAttribute("visibility", "visible");
+    });
   }
 
   const pct = function (v) { return typeof v === "number" ? (v * 100).toFixed(2) + "%" : "—"; };
@@ -1801,8 +1981,6 @@ var Gamma = (function () {
       zero: mk(g, "line", { class: "zero", visibility: "hidden" }),
       lk: mk(g, "text", { class: "legend-k" }, sdef.label),
       lv: mk(g, "text", { class: "legend-v" }, ""),
-      hi: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
-      lo: mk(g, "text", { class: "tick", "text-anchor": "end" }, ""),
       cap: mk(g, "text", { class: "cap-note", "text-anchor": "end" }, ""),
       up: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
                           "data-move": "up:" + key }, "▲"),
@@ -1846,6 +2024,9 @@ var Gamma = (function () {
         if (n.g.parentNode) n.g.parentNode.removeChild(n.g);
         clearMarks(function (el) { return el.__pane === key; });
         delete paneNodes[key];
+        /* The pane's nodes are gone, so its axis pool holds detached elements. Leaving it
+         * would hand the next pane of that name a pool of nodes in no document. */
+        delete axisPools["pane:" + key];
       }
     }
     /* Create or MOVE, in the order the reader chose. appendChild on an existing element is a
@@ -1883,7 +2064,15 @@ var Gamma = (function () {
       node.frame = f;
       node.series = series;
 
-      const ys = series.points.map(function (pt) { return pt.y; });
+      /* BOTH endpoints. The dumbbell form draws a mark from `y` to `y2`, and the domain
+       * was built from `y` alone — so the second endpoint was placed on a scale that had
+       * never seen it and rendered up to 170px outside its own pane, over the pane above.
+       * Caught by the axis-contains-its-data assertion on its first run. */
+      const ys = [];
+      series.points.forEach(function (pt) {
+        ys.push(pt.y);
+        if (pt.y2 !== undefined && pt.y2 !== null) ys.push(pt.y2);
+      });
       /* The ceiling is taken over the VALUES, before zero is folded in: a signed series
        * whose points all sit near zero must not have its tail measured against a bound the
        * axis added. */
@@ -1905,8 +2094,14 @@ var Gamma = (function () {
        * the zero line stays wherever the data puts it. */
       const domain = ys.map(clamp);
       if (series.zero) domain.push(0);
-      const y = linear(domain, f.bot - 10, f.top + 22, cap);
-      node.y = y;
+      /* The scale is built from a NICE-SNAPPED domain, so the outermost tick is a round
+       * number and the axis contains its data by construction. `linear`'s measured bounds
+       * and 18% pad are what a scale does when nobody has chosen its ends. */
+      const bandTop = f.top + 22, bandBot = f.bot - 10;
+      const dom = niceDomain(Math.min.apply(null, domain), Math.max.apply(null, domain),
+                             wantTicks(bandBot - bandTop));
+      const y = linearExact(dom.lo, dom.hi, bandBot, bandTop);
+      node.y = y; node.dom = dom;
 
       node.base.setAttribute("x1", PAD_L); node.base.setAttribute("x2", W - PAD_R);
       node.base.setAttribute("y1", f.bot); node.base.setAttribute("y2", f.bot);
@@ -1919,10 +2114,10 @@ var Gamma = (function () {
       }
       node.lk.setAttribute("x", 4); node.lk.setAttribute("y", f.top + 12);
       node.lv.setAttribute("x", 4); node.lv.setAttribute("y", f.top + 28);
-      node.hi.setAttribute("x", W - SCALE_X); node.hi.setAttribute("y", f.top + 26);
-      node.lo.setAttribute("x", W - SCALE_X); node.lo.setAttribute("y", f.bot);
-      node.hi.textContent = series.fmt(y.hi);
-      node.lo.textContent = series.fmt(y.lo);
+      drawYScale(axisPool("pane:" + key, false), node.g, {
+        ticks: tickValues(dom), y: y, fmt: series.fmt,
+        x0: PAD_L, x1: W - PAD_R, xLabel: W - SCALE_X
+      });
       /* The quantile marker sits under the top tick, and the bottom tick sits on the axis,
        * so in a short pane the two rows meet. Measured at six panes on an 800px window: the
        * note's box overlapped the low tick's by five pixels.
@@ -1935,8 +2130,13 @@ var Gamma = (function () {
        * The note moved from 9px to 11px when §3's three-size rule was held across the second
        * family, which is what brought the two rows within reach. The resolution is a
        * placement rule, not a fourth size. */
-      const capRoom = f.bot - (f.top + 42) >= 18;
-      node.cap.setAttribute("x", W - SCALE_X); node.cap.setAttribute("y", f.top + 42);
+      /* The LEFT gutter, beside the pane legend. It used to sit in the right-hand scale
+       * column, which held two labels; the column now holds a tick per gridline and the
+       * note landed on one of them at six panes. It annotates the scale, so it follows the
+       * legend that names the series rather than the numbers it would sit among. */
+      const capRoom = f.bot - (f.top + 44) >= 14;
+      node.cap.setAttribute("x", 4); node.cap.setAttribute("y", f.top + 44);
+      node.cap.setAttribute("text-anchor", "start");
       node.cap.textContent = !cap ? "" : (
         (capHi !== null && capLo !== null ? "p5/p95" : (capHi !== null ? "p95" : "p5"))
         + " · " + nOver);
@@ -2358,6 +2558,18 @@ var Gamma = (function () {
 
   let soloG = null;
   let soloKeyDrawn = null;
+  /* The endpoint label's node and the geometry it needs. Held outside any draw function so
+   * the selection path can write it without one having run since. */
+  let seriesLabelNode = null;
+  let labelCtx = null;
+  /* §4's crosshair, for the two standalone panels where one means something. The
+   * convergence panel is excluded by construction: its x axis has two positions, implied
+   * and fair, so there is nothing to snap between. */
+  let soloCross = null;
+  /* What a pointer position means on the panel that is current. Set by the draw function,
+   * read by the crosshair — the same shape as the endpoint label's context, and for the
+   * same reason: the reading must not require a redraw to have happened. */
+  let crossCtx = null;
   const soloNodes = {};
 
   /* A standalone panel is REBUILT only when its structure changes — a different series, a
@@ -2430,16 +2642,30 @@ var Gamma = (function () {
       if (q.hold < holdLo) holdLo = q.hold;
       if (q.hold > holdHi) holdHi = q.hold;
     });
+    /* No crosshair here, and it is a decision rather than an omission: this panel's x axis
+     * has two positions, implied and fair, so there is nothing to snap between. */
+    crossCtx = null;
+    const bandScales = [];
     const place = function (quotes, band, off) {
       if (!quotes.length) return;
       const vals = [];
       quotes.forEach(function (q) { vals.push(q.implied[0], q.fair[0]); });
-      const y = linear(vals, band.bot, band.top);
+      /* A band is a population of book values, so it gets the ceiling and the nice axis —
+       * the same scale a pane gets. Each band carries its own, because they hold different
+       * bets and comparing across them is what B6 forbids. */
+      const y = bookScale(vals, band.bot, band.top);
       mk(g, "line", { x1: f.x0, y1: band.top - 10, x2: f.x0, y2: band.bot + 10, class: "axis" });
       mk(g, "line", { x1: f.x1, y1: band.top - 10, x2: f.x1, y2: band.bot + 10, class: "axis" });
+      bandScales.push({ y: y, off: off });
       const c1 = f.x0 + (f.x1 - f.x0) * 0.42, c2 = f.x0 + (f.x1 - f.x0) * 0.58;
       quotes.forEach(function (q) {
-        const y0 = y(q.implied[0]), y1 = y(q.fair[0]);
+        /* CLAMPED, not raw. The ceiling narrows the domain, and a mark drawn from the raw
+         * value then leaves the panel entirely — measured at −345 on a 654px stage, which
+         * is worse than the compression the ceiling was removing. The clipped endpoint is
+         * cut and labelled below, exactly as a clipped bar is. */
+        const y0 = y(y.clamp(q.implied[0])), y1 = y(y.clamp(q.fair[0]));
+        const cutL = y.clamp(q.implied[0]) !== q.implied[0];
+        const cutR = y.clamp(q.fair[0]) !== q.fair[0];
         const d = "M " + f.x0 + " " + y0 + " C " + c1 + " " + y0 + ", " +
                   c2 + " " + y1 + ", " + f.x1 + " " + y1;
         if (layer.fresh) {
@@ -2461,6 +2687,34 @@ var Gamma = (function () {
           soloNodes[q.book].path.setAttribute("d", d);
           soloNodes[q.book].hit.setAttribute("d", d);
         }
+        const n = soloNodes[q.book];
+        if (n) {
+          if (!n.brk) {
+            n.brk = mk(g, "path", { class: "brk", visibility: "hidden" });
+            n.blab = mk(g, "text", { class: "clip-val", "text-anchor": "start",
+                                     visibility: "hidden" }, "");
+            n.brk.__scale = true; n.blab.__scale = true;
+          }
+          if (cutL || cutR) {
+            const px = cutL ? f.x0 : f.x1, py = cutL ? y0 : y1;
+            const up = (cutL ? q.implied[0] : q.fair[0]) > (cutL ? y.clamp(q.implied[0])
+                                                                 : y.clamp(q.fair[0]));
+            const d0 = up ? 3 : -3;
+            n.brk.setAttribute("d",
+              "M " + (px - 7) + " " + (py + d0) + " L " + (px - 2) + " " + (py - d0) +
+              " L " + (px + 2) + " " + (py + d0) + " L " + (px + 7) + " " + (py - d0));
+            n.brk.style.setProperty("stroke", "var(--margin)");
+            n.brk.style.setProperty("stroke-width", "1.6");
+            n.brk.setAttribute("visibility", "visible");
+            n.blab.setAttribute("x", px + 10);
+            n.blab.setAttribute("y", py + (up ? -6 : 14));
+            n.blab.textContent = pct(cutL ? q.implied[0] : q.fair[0]);
+            n.blab.setAttribute("visibility", "visible");
+          } else {
+            n.brk.setAttribute("visibility", "hidden");
+            n.blab.setAttribute("visibility", "hidden");
+          }
+        }
       });
       return y;
     };
@@ -2472,19 +2726,33 @@ var Gamma = (function () {
       const stale = [];
       for (let i = 0; i < g.childNodes.length; i += 1) {
         const n = g.childNodes[i];
-        if (n.tagName === "text") stale.push(n);
+        if (n.tagName === "text" && !n.__scale) stale.push(n);
       }
       stale.forEach(function (n) { g.removeChild(n); });
     }
+    /* Drawn AFTER the sweep, and exempt from it: the scale is the one piece of text on
+     * this panel a reader takes a number off, so it is pooled and updated like a mark
+     * rather than rebuilt like a caption. */
+    bandScales.forEach(function (bs) {
+      drawYScale(axisPool(bs.off ? "slope:b" : "slope:a", layer.fresh), g, {
+        ticks: tickValues(bs.y.dom), y: bs.y, fmt: pct,
+        x0: f.x0, x1: f.x1, xLabel: W - SCALE_X
+      });
+    });
     /* 12px apart for 11px text put the two boxes one pixel into each other. Found by
      * comparing rectangles across every mode, not by looking at it. */
     mk(g, "text", { x: 4, y: b1.top - 18, class: "band-label" }, "Comparable");
     mk(g, "text", { x: 4, y: b1.top - 3, class: "band-sub" },
-       board.matched.length
-         ? board.referenceBook + " + " + board.matched.length + " on " +
-           (board.referenceLine === null ? "no line" : board.referenceLine)
-         : board.referenceBook + " alone, no book on " +
-           (board.referenceLine === null ? "no line" : board.referenceLine));
+       /* A head-to-head market has no line, so there is no line to be "on" and the phrase
+        * "on no line" reads as a line called none. Only spreads and totals carry one. */
+       board.referenceLine === null
+         ? (board.matched.length
+              ? board.referenceBook + " + " + board.matched.length + " books"
+              : board.referenceBook + " alone; no other book quotes this market")
+         : (board.matched.length
+              ? board.referenceBook + " + " + board.matched.length + " on " +
+                board.referenceLine
+              : board.referenceBook + " alone, no book on " + board.referenceLine));
     if (two) {
       const lines = [];
       board.off_line.forEach(function (q) {
@@ -2508,21 +2776,57 @@ var Gamma = (function () {
            (board.exchanges.length === 1 ? "" : "s") +
            " excluded from both bands: a lay price is not a back price (B4)"
          : "no exchange quotes on this market");
-    /* §7: exactly one label, following the selection. */
-    if (selected && y1s) {
-      const q = quoteFor(board, selected);
-      if (q && q.fair !== null && top.indexOf(q) !== -1) {
-        mk(g, "text", { x: f.x1 + 10, y: y1s(q.fair[0]) + 3.5, class: "series-label" }, selected);
-      }
+    /* §7: exactly one label, following the selection — and §1: written by the SELECTION
+     * PATH, not by this redraw. F46: the label used to be created here with the value of
+     * `selected` at draw time, while the readout was written by `highlight()`. Hovering
+     * moved one and not the other, and they re-agreed a minute later when a row arrived.
+     *
+     * The node is created once and kept; what it says and where it sits is set by
+     * `placeSeriesLabel`, which `highlight()` calls. This function only records the
+     * geometry that function needs. */
+    labelCtx = { kind: "slope", board: board, y: y1s, x: f.x1 - 8, top: top };
+    if (!seriesLabelNode || !seriesLabelNode.parentNode) {
+      seriesLabelNode = mk(g, "text", { class: "series-label", "text-anchor": "end",
+                                        visibility: "hidden" }, "");
+      seriesLabelNode.__scale = true;
+    } else {
+      g.appendChild(seriesLabelNode);
     }
+    placeSeriesLabel();
+  }
+
+  /* The one place the endpoint label is written. Called from `highlight()` on every
+   * selection change and from the panel's own draw, so the two can never disagree. */
+  function placeSeriesLabel() {
+    const n = seriesLabelNode, ctx = labelCtx;
+    if (!n || !ctx) return;
+    const hide = function () { n.setAttribute("visibility", "hidden"); };
+    if (!selected) return hide();
+    const q = quoteFor(ctx.board, selected);
+    if (!q || q.fair === null) return hide();
+    /* A book outside the comparable band has no endpoint on this scale. It is NOT left
+     * showing the previous book: an absent label and a stale one look the same for a
+     * second and mean opposite things. */
+    if (ctx.top.indexOf(q) === -1) return hide();
+    n.setAttribute("x", ctx.x);
+    n.setAttribute("y", ctx.y(ctx.y.clamp(q.fair[0])) + 3.5);
+    n.textContent = selected;
+    n.setAttribute("visibility", "visible");
   }
 
   function drawScatter(board) {
+    /* Its marks are per-book dots, so identity comes from §1's selection on hover rather
+     * than from a reticle. */
+    crossCtx = null;
     const layer = soloLayer(soloStructureKey(board, "hold_dev"));
     const g = layer.g, f = frame();
     const qs = chartable(board);
     const x = linear(qs.map(function (q) { return q.hold; }), f.x0, f.x1);
-    const y = linear(qs.map(function (q) { return q.delta_pp; }), f.y1, f.y0);
+    /* A population of book deviations: the ceiling applies here for the same reason it
+     * applies to a pane, and the two manual ticks this replaced were the only y scale any
+     * standalone panel had. */
+    const y = bookScale(qs.map(function (q) { return q.delta_pp; }), f.y1, f.y0,
+                        { zero: true });
     if (layer.fresh) {
       mk(g, "line", { x1: f.x0, y1: f.y1, x2: f.x1, y2: f.y1, class: "axis" });
       mk(g, "line", { x1: f.x0, y1: y(0), x2: f.x1, y2: y(0), class: "zero" });
@@ -2531,14 +2835,14 @@ var Gamma = (function () {
       if (layer.fresh) {
         soloNodes[q.book] = {
           dot: soloMark(q.book, mk(g, "circle",
-            { cx: x(q.hold), cy: y(q.delta_pp), r: 4, class: "dot" })),
+            { cx: x(q.hold), cy: y(y.clamp(q.delta_pp)), r: 4, class: "dot" })),
           hit: soloMark(q.book, mk(g, "circle",
-            { cx: x(q.hold), cy: y(q.delta_pp), r: 11, class: "hit-dot" }))
+            { cx: x(q.hold), cy: y(y.clamp(q.delta_pp)), r: 11, class: "hit-dot" }))
         };
       } else if (soloNodes[q.book]) {
         ["dot", "hit"].forEach(function (k) {
           soloNodes[q.book][k].setAttribute("cx", x(q.hold));
-          soloNodes[q.book][k].setAttribute("cy", y(q.delta_pp));
+          soloNodes[q.book][k].setAttribute("cy", y(y.clamp(q.delta_pp)));
         });
       }
     });
@@ -2554,8 +2858,9 @@ var Gamma = (function () {
        selected ? selected + "  " + signed2(
          (quoteFor(board, selected) || {}).delta_pp) + " pp" : "—");
     mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "hold %");
-    mk(g, "text", { x: f.x1 + 10, y: f.y0 + 6, class: "tick" }, signed2(y.hi));
-    mk(g, "text", { x: f.x1 + 10, y: f.y1, class: "tick" }, signed2(y.lo));
+    drawYScale(axisPool("hold_dev", layer.fresh), g,
+               { ticks: tickValues(y.dom), y: y, fmt: signed2,
+                 x0: f.x0, x1: f.x1, xLabel: W - SCALE_X });
   }
 
   function drawAnalytic() {
@@ -2569,7 +2874,14 @@ var Gamma = (function () {
     });
     const all = [];
     series.forEach(function (sr) { sr.ys.forEach(function (v) { all.push(v); }); });
-    const x = linear(ps, f.x0, f.x1), y = linear(all, f.y1, f.y0);
+    /* No ceiling. These curves are evaluated over a grid the page chose, so there is no
+     * tail belonging to a book population to clip — a ceiling here would be the page
+     * cutting its own axis. The scale is still nice-snapped, which is the half of the
+     * treatment that applies. */
+    const x = linear(ps, f.x0, f.x1);
+    const ydom = niceDomain(Math.min.apply(null, all), Math.max.apply(null, all),
+                            wantTicks(f.y1 - f.y0));
+    const y = linearExact(ydom.lo, ydom.hi, f.y1, f.y0);
     mk(g, "line", { x1: f.x0, y1: y(0), x2: f.x1, y2: y(0), class: "zero" });
     mk(g, "line", { x1: f.x0, y1: f.y0 - 8, x2: f.x0, y2: f.y1 + 8, class: "axis" });
     series.forEach(function (sr, i) {
@@ -2591,19 +2903,133 @@ var Gamma = (function () {
                                      class: "analytic-line", "data-swatch": sr.m.key });
       swatch.style.setProperty("stroke", hue);
       mk(g, "text", { x: f.x0 + 32, y: ly + 3.5, class: "legend-k" }, sr.m.label);
-      mk(g, "text", { x: f.x0 + 190, y: ly + 3.5, class: "tick" }, sr.m.note);
+      /* An annotation, not a scale value. It shared `.tick` with the axis, which made a
+       * count of tick elements report six on a panel that had no y scale at all. */
+      mk(g, "text", { x: f.x0 + 190, y: ly + 3.5, class: "note" }, sr.m.note);
     });
     [0.5, 1 / 3].forEach(function (c) {
       mk(g, "line", { x1: x(c), y1: f.y0 - 4, x2: x(c), y2: f.y1 + 4, class: "zero" });
       mk(g, "text", { x: x(c), y: f.y1 + 18, class: "tick", "text-anchor": "middle" },
          "p = " + (c === 0.5 ? "1/2" : "1/3"));
     });
+    crossCtx = { kind: "gamma", g: g, f: f, x: x, y: y, ps: ps,
+                 series: series.map(function (sr, i) {
+                   return { key: sr.m.key, ys: sr.ys, hue: "var(--fam-" + (i + 1) + ")" };
+                 }) };
+    drawYScale(axisPool("gamma", layer.fresh), g,
+               { ticks: tickValues(ydom), y: y, fmt: function (v) { return num(v, 2); },
+                 x0: f.x0, x1: f.x1, xLabel: W - SCALE_X });
     mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "probability");
     mk(g, "text", { x: f.x1, y: f.y0 - 8, class: "ax-label", "text-anchor": "end" },
        "BETA AT V = 0.05");
   }
 
   const R_COLS = 60, R_ROWS = 24, R_VMAX = 0.16;
+  /* One reticle, two panels, dispatched on what the panel's x axis IS — a sampled grid on
+   * the γ family, a continuous plane on the regime map. The node set is shared; what
+   * differs is how a pointer position becomes a reading, which is the panel's own business
+   * and is supplied by whichever draw function is current. */
+  function soloCrossNodes(g) {
+    /* "Cached" is not the precondition; "cached AND still in the document" is. The solo
+     * layer empties its group whenever the panel changes, and the group ELEMENT survives —
+     * so a cache keyed on the group alone hands back nodes that were detached, and every
+     * attribute written to them lands nowhere. Measured: the reticle reported correct
+     * readings while drawing nothing. */
+    if (soloCross && soloCross.g === g && soloCross.vline.parentNode === g) {
+      return soloCross;
+    }
+    soloCross = {
+      g: g,
+      vline: mk(g, "line", { class: "crosshair reticle", visibility: "hidden" }),
+      hline: mk(g, "line", { class: "crosshair reticle", visibility: "hidden" }),
+      bg: mk(g, "rect", { class: "badge-bg", height: 16, visibility: "hidden" }),
+      tx: mk(g, "text", { class: "badge-tx badge-num", "text-anchor": "middle",
+                          visibility: "hidden" }, ""),
+      vals: []
+    };
+    for (const k in soloCross) {
+      if (soloCross[k] && soloCross[k].setAttribute) soloCross[k].__scale = true;
+    }
+    return soloCross;
+  }
+
+  function hideSoloCross() {
+    if (!soloCross) return;
+    [soloCross.vline, soloCross.hline, soloCross.bg, soloCross.tx].forEach(function (el) {
+      el.setAttribute("visibility", "hidden");
+    });
+    soloCross.vals.forEach(function (t) { t.setAttribute("visibility", "hidden"); });
+  }
+
+  function soloCrosshairAt(vx, vy) {
+    const ctx = crossCtx;
+    if (!ctx) return null;
+    const n = soloCrossNodes(ctx.g);
+    const f = ctx.f;
+    if (vx < f.x0 || vx > f.x1 || vy < f.y0 || vy > f.y1) { hideSoloCross(); return null; }
+    if (ctx.kind === "gamma") {
+      /* Snap to a SAMPLED p: the curves exist only where they were evaluated, and a
+       * reading taken between samples would be an interpolation the page never drew. */
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < ctx.ps.length; i += 1) {
+        const d = Math.abs(ctx.x(ctx.ps[i]) - vx);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      const px = ctx.x(ctx.ps[best]);
+      n.vline.setAttribute("x1", px); n.vline.setAttribute("x2", px);
+      n.vline.setAttribute("y1", f.y0); n.vline.setAttribute("y2", f.y1);
+      n.vline.setAttribute("visibility", "visible");
+      n.hline.setAttribute("visibility", "hidden");
+      n.bg.setAttribute("x", px - 34); n.bg.setAttribute("y", f.y1 + 4);
+      n.bg.setAttribute("width", 68); n.bg.setAttribute("visibility", "visible");
+      n.tx.setAttribute("x", px); n.tx.setAttribute("y", f.y1 + 16);
+      n.tx.textContent = "p = " + num(ctx.ps[best], 3);
+      n.tx.setAttribute("visibility", "visible");
+      /* One value per curve, at that curve's own height and in its own hue — §4's badge,
+       * four times, because four series cross the line at four places. */
+      while (n.vals.length < ctx.series.length) {
+        const t = mk(ctx.g, "text", { class: "clip-val", "text-anchor": "start" }, "");
+        t.__scale = true;
+        n.vals.push(t);
+      }
+      n.vals.forEach(function (t, i) {
+        if (i >= ctx.series.length) { t.setAttribute("visibility", "hidden"); return; }
+        const sr = ctx.series[i];
+        t.setAttribute("x", px + 7);
+        t.setAttribute("y", ctx.y(sr.ys[best]) + 3.5);
+        t.textContent = num(sr.ys[best], 3);
+        t.style.setProperty("fill", sr.hue);
+        t.setAttribute("visibility", "visible");
+      });
+      return ctx.ps[best];
+    }
+    if (ctx.kind === "regime") {
+      /* TWO dimensions, because the surface is a function of two. A reader wants the bias
+       * AT a position rather than to infer it from a shade. */
+      const pp = (vx - f.x0) / (f.x1 - f.x0);
+      const vv = ((f.y1 - vy) / (f.y1 - f.y0)) * R_VMAX;
+      n.vline.setAttribute("x1", vx); n.vline.setAttribute("x2", vx);
+      n.vline.setAttribute("y1", f.y0); n.vline.setAttribute("y2", f.y1);
+      n.vline.setAttribute("visibility", "visible");
+      n.hline.setAttribute("x1", f.x0); n.hline.setAttribute("x2", f.x1);
+      n.hline.setAttribute("y1", vy); n.hline.setAttribute("y2", vy);
+      n.hline.setAttribute("visibility", "visible");
+      /* The SAME function the surface was drawn with. A second derivation here would be a
+       * divergence surface, agreeing until it did not. */
+      const beta = Math.abs(Gamma.additive(pp, vv));
+      const bx = Math.min(Math.max(vx, f.x0 + 60), f.x1 - 60);
+      n.bg.setAttribute("x", bx - 58); n.bg.setAttribute("y", vy - 20);
+      n.bg.setAttribute("width", 116); n.bg.setAttribute("visibility", "visible");
+      n.tx.setAttribute("x", bx); n.tx.setAttribute("y", vy - 8);
+      n.tx.textContent = pct(pp) + " · " + pct(vv) + " · " + num(beta, 4);
+      n.tx.setAttribute("visibility", "visible");
+      n.vals.forEach(function (t) { t.setAttribute("visibility", "hidden"); });
+      return [pp, vv, beta];
+    }
+    hideSoloCross();
+    return null;
+  }
+
   function drawRegime(board) {
     const layer = soloLayer(soloStructureKey(board, "regime"));
     const g = layer.g, f = frame();
@@ -2649,6 +3075,17 @@ var Gamma = (function () {
       soloNodes[q.book] = { dot: soloMark(q.book, mk(g, "circle",
         { cx: x(pt[0]), cy: yv(pt[1]), r: 4, class: "dot overlay" })) };
     });
+    /* A chosen domain, 0 to R_VMAX, so the scale is not derived and not capped — the
+     * ticks label the bound the page set. `yv` stays the mapping the surface is drawn
+     * with, so the labels cannot drift from the cells. */
+    crossCtx = { kind: "regime", g: g, f: f, x: x, y: yv };
+    const vTicks = [];
+    const vStep = niceStep(R_VMAX, wantTicks(f.y1 - f.y0));
+    for (let v = 0; v <= R_VMAX + vStep * 1e-9; v += vStep) vTicks.push(v);
+    if (vTicks[vTicks.length - 1] < R_VMAX - vStep * 1e-9) vTicks.push(R_VMAX);
+    drawYScale(axisPool("regime", layer.fresh), g,
+               { ticks: vTicks, y: yv, fmt: pct,
+                 x0: f.x0, x1: f.x1, xLabel: W - SCALE_X, grid: false });
     mk(g, "text", { x: f.x0, y: H - 20, class: "ax-label" }, "fair probability");
     mk(g, "text", { x: f.x1, y: H - 20, class: "ax-label", "text-anchor": "end" },
        "HOLD, 0 TO " + (R_VMAX * 100).toFixed(0) + "%");
@@ -2811,6 +3248,8 @@ var Gamma = (function () {
       if (soloG && soloG.parentNode) { soloG.parentNode.removeChild(soloG); soloG = null; }
       soloKeyDrawn = null;
       for (const k in soloNodes) delete soloNodes[k];
+      seriesLabelNode = null; labelCtx = null;
+      soloCross = null; crossCtx = null;
       clearMarks(function (el) { return el.__pane === "__solo"; });
       $("add-pane").hidden = false;
       $("sort-wrap").hidden = mode === FAM.TIME;
@@ -2825,6 +3264,9 @@ var Gamma = (function () {
         if (n.g.parentNode) n.g.parentNode.removeChild(n.g);
         clearMarks(function (el) { return el.__pane === key; });
         delete paneNodes[key];
+        /* The pane's nodes are gone, so its axis pool holds detached elements. Leaving it
+         * would hand the next pane of that name a pool of nodes in no document. */
+        delete axisPools["pane:" + key];
       }
       if (crossNodes) {
         [crossNodes.line, crossNodes.bg, crossNodes.tx].forEach(function (el) {
@@ -3014,6 +3456,7 @@ var Gamma = (function () {
     pick: function (book, lock) { pick(book, lock); },
     selection: function () { return { selected: selected, locked: locked }; },
     crosshairAt: function (vx) { return crosshairAt(vx); },
+    soloCrosshairAt: function (vx, vy) { return soloCrosshairAt(vx, vy); },
     registry: function () {
       return REGISTRY.map(function (sd) {
         return { key: sd.key, label: sd.label, family: sd.family, quantity: sd.quantity,
@@ -3078,11 +3521,14 @@ var Gamma = (function () {
    * not, which is a comment that would have sent the next reader to a missing file. */
   bindSelection($("stage"));
   $("stage").addEventListener("pointermove", function (e) {
-    if (mode !== FAM.BOOK) return;
     const r = $("stage").getBoundingClientRect();
-    if (!r.width) return;
-    crosshairAt(((e.clientX - r.left) / r.width) * W);
+    if (!r.width || !r.height) return;
+    const vx = ((e.clientX - r.left) / r.width) * W;
+    const vy = ((e.clientY - r.top) / r.height) * H;
+    if (mode === FAM.BOOK || mode === FAM.TIME) { crosshairAt(vx); return; }
+    soloCrosshairAt(vx, vy);
   });
+  $("stage").addEventListener("pointerleave", function () { hideSoloCross(); });
   $("stage").addEventListener("click", function (e) {
     const mv = e.target && e.target.getAttribute && e.target.getAttribute("data-move");
     if (!mv) return;
