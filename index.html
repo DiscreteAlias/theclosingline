@@ -257,7 +257,10 @@
   .tick.is-dim { fill: var(--faint); }
   .legend-k { font: 11px var(--sans); fill: var(--muted); }
   .legend-v { font: 12px var(--mono); fill: var(--primary); }
-  .series-label { font: 11px var(--sans); fill: var(--accent); }
+  /* The endpoint label is a BADGE, so this styles text on an accent chip rather than text
+     on the plot. It was bare accent-coloured text drawn at the line's terminus: three paths
+     crossed its box, one of them the reference, whose line is that same accent. */
+  .series-label { fill: var(--page); }
   .band-label { font: 11px var(--sans); fill: var(--muted); }
   .band-sub { font: 11px var(--sans); fill: var(--muted); }
   .band-warn { font: 11px var(--sans); fill: var(--margin); }
@@ -1852,6 +1855,60 @@ var Gamma = (function () {
     });
   }
 
+  /* ===================================================================
+   * ONE BADGE. §4's "axis value badge" is a chip with a value on it, and the page had three
+   * constructions of it — the pane crosshair, the standalone reticle, and, from step (i),
+   * the convergence panel's endpoint label. Each carried its own hardcoded width (88, 68,
+   * 116): a magic number per call site, and a wrong one whenever the text does not happen
+   * to fit it.
+   *
+   * F44 is why this is one function. Three implementations of a thing is how three panels
+   * ended up with no y axis. The width comes from the RENDERED text rather than from a
+   * constant, so a longer book name widens its own chip.
+   * =================================================================== */
+
+  function textWidth(el) {
+    /* `getComputedTextLength` is a layout measurement and the node harnesses have no
+     * layout. They never draw a badge — nothing hovers in a stubbed DOM — but the fallback
+     * is stated rather than left to return undefined and poison an arithmetic. */
+    if (el.getComputedTextLength) {
+      try { return el.getComputedTextLength(); } catch (e) { /* fall through */ }
+    }
+    return (el.textContent || "").length * 6.6;
+  }
+
+  function badgeNodes(store, g, extraClass) {
+    /* Attachment, not just presence — F47. A group emptied under a cached node leaves the
+     * cache matching and the node drawing nowhere. */
+    if (!store.bg || store.bg.parentNode !== g) {
+      store.bg = mk(g, "rect", { class: "badge-bg", height: 16, visibility: "hidden" });
+      store.tx = mk(g, "text", { class: "badge-tx" + (extraClass ? " " + extraClass : ""),
+                                 "text-anchor": "middle", visibility: "hidden" }, "");
+      store.bg.__scale = true; store.tx.__scale = true;
+    }
+    return store;
+  }
+
+  /* Places the chip and returns the box it occupies, so a caller can resolve what it
+   * covers. `anchor` is "start" to pin its left edge at x; otherwise it is centred. */
+  function placeBadge(n, x, cy, text, anchor) {
+    n.tx.textContent = text;
+    const w = textWidth(n.tx) + 14;
+    const left = anchor === "start" ? x : x - w / 2;
+    n.bg.setAttribute("x", left); n.bg.setAttribute("y", cy - 8);
+    n.bg.setAttribute("width", w);
+    n.bg.setAttribute("visibility", "visible");
+    n.tx.setAttribute("x", left + w / 2); n.tx.setAttribute("y", cy + 4);
+    n.tx.setAttribute("visibility", "visible");
+    return { left: left, right: left + w, top: cy - 8, bot: cy + 8 };
+  }
+
+  function hideBadge(n) {
+    if (!n || !n.bg) return;
+    n.bg.setAttribute("visibility", "hidden");
+    n.tx.setAttribute("visibility", "hidden");
+  }
+
   const pct = function (v) { return typeof v === "number" ? (v * 100).toFixed(2) + "%" : "—"; };
   const pctRaw = function (v) { return typeof v === "number" ? v.toFixed(4) : "—"; };
   const signed2 = function (v) {
@@ -2435,21 +2492,16 @@ var Gamma = (function () {
     crossNodes.line.setAttribute("x1", px); crossNodes.line.setAttribute("x2", px);
     crossNodes.line.setAttribute("y1", 0); crossNodes.line.setAttribute("y2", H - axisH());
     crossNodes.line.setAttribute("visibility", "visible");
-    crossNodes.bg.setAttribute("x", px - 44); crossNodes.bg.setAttribute("y", H - axisH() + 2);
-    crossNodes.bg.setAttribute("width", 88);
-    crossNodes.bg.setAttribute("visibility", "visible");
-    crossNodes.tx.setAttribute("x", px); crossNodes.tx.setAttribute("y", H - axisH() + 14);
-    crossNodes.tx.setAttribute("visibility", "visible");
     if (domainKind === FAM.TIME) {
       const fr = timeFrames()[best];
-      crossNodes.tx.textContent = fr ? fr.at.slice(11, 19) : book;
       /* Additive: `badge-tx` is the node's identity and `badge-num` is its type role.
        * Replacing the identity class would have broken every selector that finds the badge,
        * which is how the first version of this failed. */
       crossNodes.tx.setAttribute("class", "badge-tx badge-num");
+      placeBadge(crossNodes, px, H - axisH() + 10, fr ? fr.at.slice(11, 19) : book);
     } else {
-      crossNodes.tx.textContent = book;
       crossNodes.tx.setAttribute("class", "badge-tx");
+      placeBadge(crossNodes, px, H - axisH() + 10, book);
     }
     if (domainKind !== FAM.TIME) pick(book, false);
     return book;
@@ -2560,7 +2612,7 @@ var Gamma = (function () {
   let soloKeyDrawn = null;
   /* The endpoint label's node and the geometry it needs. Held outside any draw function so
    * the selection path can write it without one having run since. */
-  let seriesLabelNode = null;
+  let seriesLabelBadge = {};
   let labelCtx = null;
   /* §4's crosshair, for the two standalone panels where one means something. The
    * convergence panel is excluded by construction: its x axis has two positions, implied
@@ -2784,23 +2836,21 @@ var Gamma = (function () {
      * The node is created once and kept; what it says and where it sits is set by
      * `placeSeriesLabel`, which `highlight()` calls. This function only records the
      * geometry that function needs. */
-    labelCtx = { kind: "slope", board: board, y: y1s, x: f.x1 - 8, top: top };
-    if (!seriesLabelNode || !seriesLabelNode.parentNode) {
-      seriesLabelNode = mk(g, "text", { class: "series-label", "text-anchor": "end",
-                                        visibility: "hidden" }, "");
-      seriesLabelNode.__scale = true;
-    } else {
-      g.appendChild(seriesLabelNode);
-    }
+    /* The label is pinned in the RIGHT GUTTER, clear of the plot, rather than at the line's
+     * terminus inside it. Measured before the change: the bare text's box was crossed by
+     * three drawn paths, one of them the reference — whose line is the accent, the same
+     * colour the label was. */
+    labelCtx = { kind: "slope", board: board, y: y1s, x: f.x1 + 6, top: top, g: g };
     placeSeriesLabel();
   }
 
   /* The one place the endpoint label is written. Called from `highlight()` on every
    * selection change and from the panel's own draw, so the two can never disagree. */
   function placeSeriesLabel() {
-    const n = seriesLabelNode, ctx = labelCtx;
-    if (!n || !ctx) return;
-    const hide = function () { n.setAttribute("visibility", "hidden"); };
+    const ctx = labelCtx;
+    if (!ctx) return;
+    const n = badgeNodes(seriesLabelBadge, ctx.g, "series-label");
+    const hide = function () { hideBadge(n); showAllScaleTicks(); };
     if (!selected) return hide();
     const q = quoteFor(ctx.board, selected);
     if (!q || q.fair === null) return hide();
@@ -2808,10 +2858,45 @@ var Gamma = (function () {
      * showing the previous book: an absent label and a stale one look the same for a
      * second and mean opposite things. */
     if (ctx.top.indexOf(q) === -1) return hide();
-    n.setAttribute("x", ctx.x);
-    n.setAttribute("y", ctx.y(ctx.y.clamp(q.fair[0])) + 3.5);
-    n.textContent = selected;
-    n.setAttribute("visibility", "visible");
+    const cy = ctx.y(ctx.y.clamp(q.fair[0]));
+    const box = placeBadge(n, ctx.x, cy, selected, "start");
+    /* The chip and the scale share the gutter, so whatever it covers is hidden while it is
+     * shown. The pane crosshair's badge needs no such rule because it never overlaps its
+     * labels — it sits above them by construction — so there was no existing behaviour to
+     * match, and this is stated rather than described as matching one. */
+    showAllScaleTicks();
+    hideScaleTicksIn(box);
+  }
+
+  /* The slope panel's two band scales, restored and then re-hidden on every placement:
+   * a tick hidden for a badge that has since moved must come back. */
+  function eachSlopeTick(fn) {
+    ["slope:a", "slope:b"].forEach(function (name) {
+      const pool = axisPools[name];
+      if (!pool) return;
+      pool.tick.forEach(fn);
+    });
+  }
+
+  function showAllScaleTicks() {
+    eachSlopeTick(function (t) {
+      if (t.__hiddenByBadge) {
+        t.__hiddenByBadge = false;
+        t.setAttribute("visibility", "visible");
+      }
+    });
+  }
+
+  function hideScaleTicksIn(box) {
+    eachSlopeTick(function (t) {
+      if (t.getAttribute("visibility") === "hidden") return;
+      const ty = parseFloat(t.getAttribute("y"));
+      if (isNaN(ty)) return;
+      if (Math.abs((ty - 3.5) - (box.top + box.bot) / 2) < 12) {
+        t.__hiddenByBadge = true;
+        t.setAttribute("visibility", "hidden");
+      }
+    });
   }
 
   function drawScatter(board) {
@@ -2980,11 +3065,7 @@ var Gamma = (function () {
       n.vline.setAttribute("y1", f.y0); n.vline.setAttribute("y2", f.y1);
       n.vline.setAttribute("visibility", "visible");
       n.hline.setAttribute("visibility", "hidden");
-      n.bg.setAttribute("x", px - 34); n.bg.setAttribute("y", f.y1 + 4);
-      n.bg.setAttribute("width", 68); n.bg.setAttribute("visibility", "visible");
-      n.tx.setAttribute("x", px); n.tx.setAttribute("y", f.y1 + 16);
-      n.tx.textContent = "p = " + num(ctx.ps[best], 3);
-      n.tx.setAttribute("visibility", "visible");
+      placeBadge(n, px, f.y1 + 12, "p = " + num(ctx.ps[best], 3));
       /* One value per curve, at that curve's own height and in its own hue — §4's badge,
        * four times, because four series cross the line at four places. */
       while (n.vals.length < ctx.series.length) {
@@ -3018,11 +3099,7 @@ var Gamma = (function () {
        * divergence surface, agreeing until it did not. */
       const beta = Math.abs(Gamma.additive(pp, vv));
       const bx = Math.min(Math.max(vx, f.x0 + 60), f.x1 - 60);
-      n.bg.setAttribute("x", bx - 58); n.bg.setAttribute("y", vy - 20);
-      n.bg.setAttribute("width", 116); n.bg.setAttribute("visibility", "visible");
-      n.tx.setAttribute("x", bx); n.tx.setAttribute("y", vy - 8);
-      n.tx.textContent = pct(pp) + " · " + pct(vv) + " · " + num(beta, 4);
-      n.tx.setAttribute("visibility", "visible");
+      placeBadge(n, bx, vy - 12, pct(pp) + " · " + pct(vv) + " · " + num(beta, 4));
       n.vals.forEach(function (t) { t.setAttribute("visibility", "hidden"); });
       return [pp, vv, beta];
     }
@@ -3248,7 +3325,7 @@ var Gamma = (function () {
       if (soloG && soloG.parentNode) { soloG.parentNode.removeChild(soloG); soloG = null; }
       soloKeyDrawn = null;
       for (const k in soloNodes) delete soloNodes[k];
-      seriesLabelNode = null; labelCtx = null;
+      seriesLabelBadge = {}; labelCtx = null;
       soloCross = null; crossCtx = null;
       clearMarks(function (el) { return el.__pane === "__solo"; });
       $("add-pane").hidden = false;
