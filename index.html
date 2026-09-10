@@ -204,6 +204,44 @@
 
   /* ---- the stage: the only row that flexes ---- */
   .stage { flex: 1; min-height: 0; position: relative; }
+  /* Overlaying the plot, not displacing it. A sheet that narrowed the stage would force
+     measure() and a full redraw on every open, which is the thing F28 forbids. */
+  .info {
+    position: absolute; top: 0; right: 0; bottom: 0; width: min(46%, 560px); z-index: 30;
+    background: var(--surface); border-left: 1px solid var(--rule);
+    box-shadow: -18px 0 40px rgba(0, 0, 0, .66);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .info[hidden] { display: none; }
+  .info > header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--hairline);
+    background: var(--panel);
+  }
+  .info h2 { margin: 0; font: 12px var(--sans); color: var(--primary); flex: 1; }
+  .info-x {
+    background: transparent; border: 0; color: var(--muted); cursor: pointer;
+    font: 12px var(--sans); padding: 0 2px;
+  }
+  .info-x:hover { color: var(--primary); }
+  .info-x:focus-visible, .info-btn:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px;
+  }
+  .info-body { overflow-y: auto; padding: 14px 16px 20px; }
+  .info-body h3 {
+    margin: 16px 0 6px; font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .info-body h3:first-child { margin-top: 0; }
+  .info-body p { margin: 0 0 10px; color: var(--secondary); max-width: 62ch; }
+  .info-body p:last-child { margin-bottom: 0; }
+  /* The conditional the two sensitivity charts lead with. It is not a decoration: a reader
+     who takes either as "here is how wrong we are" has misread it. */
+  .info-body p.conditional { color: var(--primary); border-left: 3px solid var(--margin);
+                             padding-left: 10px; }
+  .info-body b { color: var(--primary); font-weight: 600; }
+  /* The pane's own affordance, in the button column beside ▲ ▼ ✕. */
+  text.pane-btn[data-info] { fill: var(--muted); }
   svg#stage { display: block; width: 100%; height: 100%; }
 
   /* Marks are coloured by their VALUE at draw time, so these rules carry only the
@@ -413,6 +451,10 @@
       </button>
       <div class="menu" id="series-menu" role="listbox" hidden></div>
     </div>
+    <!-- A standalone panel has no pane header: it IS the stage, and its identity lives
+         here. Panes carry their own, in the button column. -->
+    <button type="button" class="ctl info-btn" id="series-info" hidden
+            aria-label="About this chart">&#9432;</button>
     <span class="divider" aria-hidden="true"></span>
     <select class="ctl" id="event-select" aria-label="Game"></select>
     <select class="ctl" id="market-select" aria-label="Market"></select>
@@ -430,6 +472,19 @@
   </div>
 
   <div class="stage">
+    <!-- A SIBLING of the chart, not a node in it. Opening this adds nothing to the SVG,
+         sets no attribute on it and triggers no re-measure: F28 and F40 are satisfied by
+         construction rather than by remembering to satisfy them. HTML because paragraphs
+         need real wrapping, scrolling and selection, which SVG text does not give. -->
+    <aside class="info" id="info-panel" role="dialog" aria-modal="false"
+           aria-labelledby="info-title" hidden>
+      <header>
+        <h2 id="info-title"></h2>
+        <button type="button" class="info-x" id="info-close"
+                aria-label="Close">&#10005;</button>
+      </header>
+      <div class="info-body" id="info-body"></div>
+    </aside>
     <svg id="stage" viewBox="0 0 1000 520" role="img"
          aria-labelledby="stage-title" aria-describedby="stage-desc">
       <title id="stage-title">The chart application</title>
@@ -1856,6 +1911,202 @@ var Gamma = (function () {
   }
 
   /* ===================================================================
+   * THE INFO PANELS — content from `specs/CHART_REFERENCE.md`.
+   *
+   * That file is a REGISTER, written for whoever maintains this page: it records what each
+   * chart claims, what it assumes, and which finding governs it. These are the same facts
+   * for a different reader — someone deciding whether a price is worth taking, who does not
+   * know the word "devig" and does not need to.
+   *
+   * Three parts, always in this order: what it is, how to read it, what it does not say.
+   *
+   * TWO ENTRIES CARRY THEIR CONDITIONAL FIRST. `beta` and `regime` are sensitivity
+   * surfaces: they show what the fair price would be off by IF the venue's vig shape is not
+   * multiplicative. Under multiplicative truth the bias is ZERO — not small — at all orders
+   * in v, because the hold cancels. That wording is transcribed from `gamma.js`, which is
+   * itself a proven transcription of Proposition 2, rather than paraphrased. A reader who
+   * takes either chart as "here is how wrong we are" has misread it, and skimming must not
+   * be able to reach that reading.
+   * =================================================================== */
+  const INFO = {
+    slope: {
+      title: "Implied → fair price",
+      is: "Every book\u2019s price for this bet, drawn twice: on the left as the chance " +
+          "the raw odds imply, on the right as the chance left once the book\u2019s own " +
+          "margin is taken out. One line per book, both ends on the same scale.",
+      read: [
+        "Look at how far the lines spread on the left, and how far they spread on the " +
+        "right. On a typical panel the spread on the right is about a third of the spread " +
+        "on the left. Most of the apparent disagreement between books is margin, not a " +
+        "difference of opinion about the game.",
+        "A line that stays far from the others at the right-hand end is the interesting " +
+        "one. That book still disagrees after its margin is accounted for, which is a " +
+        "different claim from simply pricing wider.",
+        "The reference book is drawn in the accent colour throughout, so you can see " +
+        "where everyone else lands relative to it."
+      ],
+      not: [
+        "It does not say that prices always converge. Convergence is asserted for the " +
+        "panel drawn, not as a law \u2014 on the corpus it holds on 39 panels out of 40, " +
+        "and the test asserts the panel rather than the claim.",
+        "There is no crosshair here, and that is deliberate rather than missing. The " +
+        "horizontal axis has two positions, not a range, so there is nothing to snap to."
+      ]
+    },
+    hold_strip: {
+      title: "Hold by book",
+      is: "Each book\u2019s margin on this market \u2014 the share of the price that is " +
+          "the book\u2019s cut rather than the chance of the outcome.",
+      read: [
+        "Read left to right: books are ranked, so the shape tells you how wide the " +
+        "market\u2019s pricing is. A tight cluster means the books agree about what to " +
+        "charge; a long tail means one or two are charging much more than the rest.",
+        "Colour carries the same number as height, cool for a low margin and amber for a " +
+        "high one, so the expensive end of the board is visible without reading values."
+      ],
+      not: [
+        "It does not say a high-margin book is pricing the game badly. Margin and " +
+        "accuracy are separate questions, and the hold-versus-deviation panel is where " +
+        "this page looks at whether they are related. They are not.",
+        "The top of the scale is cut at the 95th percentile so one expensive book cannot " +
+        "flatten everyone else. Any book above the cut is drawn at the top with a break " +
+        "mark and its real number printed beside it \u2014 nothing is hidden, and the " +
+        "note in the corner says how many were cut."
+      ]
+    },
+    overround: {
+      title: "Overround",
+      is: "The book\u2019s implied chances for this market added together. A fair market " +
+          "would sum to 100%; the excess above that is the margin, drawn as the bar.",
+      read: [
+        "This is the same quantity as hold, made physical rather than stated as a " +
+        "percentage. Longer bar, more of the price that is the book\u2019s rather than " +
+        "the game\u2019s.",
+        "It is the most direct answer to \u201cwhat am I paying to bet here\u201d, and " +
+        "the ranking across books is the answer to \u201cwhere is it cheapest\u201d."
+      ],
+      not: [
+        "It does not tell you whether the price is right, only what it costs. A cheap " +
+        "book with a wrong number is still a wrong number."
+      ]
+    },
+    dumbbell: {
+      title: "Offered vs fair price",
+      is: "For each book, the price on offer against the price implied by that same " +
+          "book\u2019s own numbers once its margin is removed. The gap between the two " +
+          "dots is that book\u2019s margin, in odds rather than in percent.",
+      read: [
+        "A short bar is a book taking little. A long bar is a book taking a lot. Because " +
+        "both ends come from the same book, the comparison is internal \u2014 nothing " +
+        "here depends on another book being right.",
+        "Scanning the right-hand ends tells you where the books actually agree, with the " +
+        "cost of doing business stripped out."
+      ],
+      not: [
+        "It does not say the fair end is the true chance. It is what this book\u2019s " +
+        "own prices imply after its margin is removed, which is a statement about the " +
+        "book and not about the game."
+      ]
+    },
+    hold_dev: {
+      title: "Hold vs deviation",
+      is: "Each book plotted with its margin across the bottom and, up the side, how far " +
+          "its fair price sits from the reference book\u2019s.",
+      read: [
+        "The question this panel asks is whether books that charge more also price " +
+        "further from the sharpest book on the board. The answer on this data is no: the " +
+        "cloud has no visible tilt.",
+        "A book taking 7.6% is not producing a more biased price than one taking 3%. " +
+        "That is worth knowing before treating a wide book as a bad book."
+      ],
+      not: [
+        "There is no fitted line, on purpose. The finding here is the ABSENCE of a " +
+        "relationship, and drawing a line through a shapeless cloud invites reading noise " +
+        "as signal.",
+        "It does not establish that margin never predicts bias, only that it does not on " +
+        "the panel in front of you."
+      ]
+    },
+    gamma: {
+      title: "\u03b3(p) family",
+      is: "Four different methods for removing a book\u2019s margin, and how much each " +
+          "one bends the resulting price, plotted against how likely the outcome is.",
+      read: [
+        "Every book quotes a price with margin in it, and getting to a fair price means " +
+        "choosing how that margin is spread across the outcomes. These four curves are " +
+        "four defensible answers, and where they separate is where the choice matters.",
+        "Flat line at zero: that is the multiplicative method on a market whose margin is " +
+        "genuinely spread proportionally. The two middle curves cross zero at even money " +
+        "and diverge toward the edges. The fourth grows fastest at the extremes, which is " +
+        "why heavy favourites and long shots are where method choice bites hardest.",
+        "The practical reading: near even money the methods agree and the choice barely " +
+        "matters. Out at the tails they do not, and a fair price quoted to two decimals " +
+        "is quoting a precision the method choice does not support."
+      ],
+      not: [
+        "It does not say which method is right. That depends on how the venue actually " +
+        "builds its margin, which this page does not measure.",
+        "The curves are computed, not fitted \u2014 they come from the model rather than " +
+        "from the day\u2019s prices, so they do not move when the market does."
+      ]
+    },
+    beta: {
+      title: "\u03b2 = v\u00b7\u03b3 per book",
+      conditional:
+        "This is what each book\u2019s fair price would be off by IF that venue\u2019s " +
+        "margin is not spread proportionally. It is a sensitivity, not a measurement of " +
+        "error. Where the margin IS spread proportionally, the standard method is exact " +
+        "and the bias is <b>zero \u2014 not small</b>, at every order, because the margin " +
+        "cancels out of the arithmetic entirely.",
+      is: "Each bar is that book\u2019s exposure to the question, which grows with the " +
+          "margin it charges and with how far the game sits from even money.",
+      read: [
+        "Read it as \u201chow much does the method choice cost me at this book\u201d. " +
+        "A book taking little margin on a near-even game has almost no exposure however " +
+        "the question is answered. A high-margin book on a lopsided game has a lot.",
+        "The finding worth carrying away: at the highest-margin book on the board, the " +
+        "uncertainty from the method choice is larger than the entire measured " +
+        "disagreement between books. The number people argue about is smaller than the " +
+        "assumption nobody examines."
+      ],
+      not: [
+        "It is not a claim that any book is wrong by this much. Nothing on this page " +
+        "measures how a venue builds its margin; these bars price the consequence of not " +
+        "knowing.",
+        "It does not point at a bet. A large bar means the answer is uncertain, not that " +
+        "the price is beatable."
+      ]
+    },
+    regime: {
+      title: "Regime map",
+      conditional:
+        "The same conditional as the bias bars, drawn as a landscape: this is the cost of " +
+        "being wrong about how a venue spreads its margin, not a measurement of error. " +
+        "Where the margin is spread proportionally the standard method is exact and the " +
+        "bias is <b>zero \u2014 not small</b>, at every order. Reading this surface as " +
+        "\u201chere is how wrong we are\u201d is a misreading.",
+      is: "Brightness is the size of that exposure, across every combination of how " +
+          "likely the outcome is (left to right) and how much margin the book takes " +
+          "(bottom to top). The dots are this game\u2019s books at their real margins.",
+      read: [
+        "Dark down the middle, bright toward the left and right edges: the exposure " +
+        "vanishes at even money and grows toward the extremes. Dark along the bottom, " +
+        "brighter toward the top: it grows with margin. Both together mean a cheap book " +
+        "on a close game sits in the safest corner of the map.",
+        "Find the dots. Where they sit tells you how exposed this particular board is, " +
+        "and a dot high on the map is a book charging prop-market margin on a game-level " +
+        "market \u2014 which is a thing worth noticing on its own."
+      ],
+      not: [
+        "The surface is computed from the model, not from the day\u2019s prices. Only " +
+        "the dots move as the market moves.",
+        "It does not rank books by quality. A dot high on the map is exposed to the " +
+        "question, not proven wrong."
+      ]
+    }
+  };
+
+  /* ===================================================================
    * ONE BADGE. §4's "axis value badge" is a chip with a value on it, and the page had three
    * constructions of it — the pane crosshair, the standalone reticle, and, from step (i),
    * the convergence panel's endpoint label. Each carried its own hardcoded width (88, 68,
@@ -1901,6 +2152,41 @@ var Gamma = (function () {
     n.tx.setAttribute("x", left + w / 2); n.tx.setAttribute("y", cy + 4);
     n.tx.setAttribute("visibility", "visible");
     return { left: left, right: left + w, top: cy - 8, bot: cy + 8 };
+  }
+
+  /* Fills and shows the panel. Nothing here touches the SVG: the panel is a sibling of
+   * it, so opening cannot disturb a mark, a scale or a listener. */
+  function openInfo(key) {
+    const spec = INFO[key];
+    if (!spec) return false;
+    const body = $("info-body");
+    $("info-title").textContent = spec.title;
+    body.textContent = "";
+    const para = function (text, cls) {
+      const el = document.createElement("p");
+      if (cls) el.className = cls;
+      /* `innerHTML` for ONE reason: the conditional carries <b> emphasis and these strings
+       * are literals in this file, not anything a feed or a reader can reach. */
+      el.innerHTML = text;
+      body.appendChild(el);
+      return el;
+    };
+    const head = function (text) {
+      const el = document.createElement("h3");
+      el.textContent = text;
+      body.appendChild(el);
+    };
+    /* THE CONDITIONAL COMES FIRST, before any heading, so it cannot be skimmed past. */
+    if (spec.conditional) para(spec.conditional, "conditional");
+    head("What it is");
+    para(spec.is);
+    head("How to read it");
+    spec.read.forEach(function (t) { para(t); });
+    head("What it does not say");
+    spec.not.forEach(function (t) { para(t); });
+    body.scrollTop = 0;
+    openPopup(infoPopup);
+    return true;
   }
 
   function hideBadge(n) {
@@ -2045,6 +2331,9 @@ var Gamma = (function () {
                             "data-move": "down:" + key }, "▼"),
       close: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
                              "data-move": "off:" + key }, "✕"),
+      /* §4's info affordance, joining the column this family already has. */
+      info: mk(g, "text", { class: "pane-btn", "text-anchor": "middle",
+                            "data-info": key }, "\u9432"),
       marks: {}
     };
     paneNodes[key] = node;
@@ -2202,6 +2491,8 @@ var Gamma = (function () {
       node.down.setAttribute("x", W - BTN_X); node.down.setAttribute("y", f.top + 26);
       node.close.setAttribute("x", W - BTN_X); node.close.setAttribute("y", f.top + 40);
       node.close.setAttribute("visibility", n > 1 ? "visible" : "hidden");
+      node.info.setAttribute("x", W - BTN_X); node.info.setAttribute("y", f.top + 54);
+      node.info.setAttribute("visibility", INFO[key] ? "visible" : "hidden");
 
       /* A TIME series is not one mark per domain member: it is one PATH per book across
        * every member, or a grid of cells. That is a new mark FORM, which the registry's
@@ -3330,6 +3621,8 @@ var Gamma = (function () {
       clearMarks(function (el) { return el.__pane === "__solo"; });
       $("add-pane").hidden = false;
       $("sort-wrap").hidden = mode === FAM.TIME;
+      /* Panes carry their own; this one belongs to a standalone panel. */
+      $("series-info").hidden = true;
       $("series-name").textContent = activePanes().length +
         (mode === FAM.TIME ? " time series" : " book series");
       drawBookMode(boardNow);
@@ -3359,6 +3652,7 @@ var Gamma = (function () {
       }
       $("add-pane").hidden = true;
       $("sort-wrap").hidden = true;
+      $("series-info").hidden = !INFO[soloKey];
       const sdef = mustSeries(soloKey);
       $("series-name").textContent = sdef.label;
       sdef.draw(boardNow);
@@ -3607,7 +3901,11 @@ var Gamma = (function () {
   });
   $("stage").addEventListener("pointerleave", function () { hideSoloCross(); });
   $("stage").addEventListener("click", function (e) {
-    const mv = e.target && e.target.getAttribute && e.target.getAttribute("data-move");
+    const t = e.target;
+    if (!t || !t.getAttribute) return;
+    const info = t.getAttribute("data-info");
+    if (info) { openInfo(info); return; }
+    const mv = t.getAttribute("data-move");
     if (!mv) return;
     const parts = mv.split(":");
     movePane(parts[0], parts[1]);
@@ -3657,6 +3955,10 @@ var Gamma = (function () {
   }
 
   function popupContains(node) {
+    /* A pane's ⓘ is a trigger too, but it is created and destroyed with its pane rather
+     * than living in a registry entry. Without this the pointerdown handler closes the
+     * panel a moment before the click reopens it, which reads as a flicker. */
+    if (node && node.getAttribute && node.getAttribute("data-info")) return true;
     return POPUPS.some(function (p) {
       return p.panel.contains(node) || p.triggers.some(function (t) {
         return t === node || t.contains(node);
@@ -3665,6 +3967,14 @@ var Gamma = (function () {
   }
 
   registerPopup($("series-menu"), [$("series-btn"), $("add-pane")]);
+  /* One registry, so opening the info panel closes the menu and Escape closes either.
+   * Building a second dismissal path would be the F44 shape. */
+  const infoPopup = { panel: $("info-panel"), triggers: [$("series-info")] };
+  POPUPS.push(infoPopup);
+  $("series-info").addEventListener("click", function () {
+    if (!soloKey || !openInfo(soloKey)) return;
+  });
+  $("info-close").addEventListener("click", function () { closePopup(infoPopup, true); });
 
   /* `pointerdown`, not `click`: a press outside dismisses immediately, and a drag that
    * starts inside the panel and releases outside does not. */
