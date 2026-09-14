@@ -1086,9 +1086,18 @@ var Gamma = (function () {
       });
   }
 
-  const SELECT = "select=id,captured_at,payload";
+  /* ONE REGION ON THE BOARD, FILTERED AT THE SERVER (R-CL1). Once the poller writes one row
+   * per region per poll, an unfiltered read would hand this page three different book lists
+   * as consecutive snapshots. The filter is applied in both places rows enter: every REST
+   * query through SELECT, and the Realtime join below. It does NOT make ids contiguous
+   * within a region — once regions interleave, the next eu row is not highestId + 1, and the
+   * interior-gap check on the socket path reads every arrival as a hole. That is F58, and it
+   * must be resolved before the region flip, not after. */
+  const BOARD_REGION = "eu";
+  const SELECT = "select=id,captured_at,payload&region=eq." + BOARD_REGION;
 
-  /* The row count in the table, from Content-Range. Held as a number rather than written
+  /* The row count for BOARD_REGION, from Content-Range — the whole table only while the
+   * poller writes one region. Held as a number rather than written
    * straight to the DOM because it has to be ADVANCED on each live insert: leaving it at
    * its load-time value would show a figure that is wrong within the minute and looks
    * exactly like a figure that is right. Nothing deletes from this table — retention is
@@ -3743,7 +3752,10 @@ var Gamma = (function () {
         config: {
           broadcast: { self: false },
           presence: { key: "" },
-          postgres_changes: [{ event: "INSERT", schema: "public", table: SUPABASE_TABLE }]
+          // The same region filter as SELECT, applied server-side, so no other region's
+          // payload is sent to the browser at all.
+          postgres_changes: [{ event: "INSERT", schema: "public", table: SUPABASE_TABLE,
+                               filter: "region=eq." + BOARD_REGION }]
         }
       });
       hb = setInterval(function () {
