@@ -811,8 +811,8 @@ var BoardQuote = (function () {
  * from the landed `poller.decode` -> `board._market_board` chain, with four red-proofs that
  * each go red on a different rule being dropped. See F26.
  *
- * WHAT THE PAYLOAD CANNOT TELL US (F26). `board.py:34` holds
- * `EXCHANGES = frozenset({"betfair_ex_eu", "matchbook"})`. `poller.py` imports
+ * WHAT THE PAYLOAD CANNOT TELL US (F26). `board.py` holds `EXCHANGES` — the two eu exchanges
+ * and, from R-CL3, the five `us_ex` venues. `poller.py` imports
  * BOARD_MARKETS, REFERENCE_BOOK and TOTALS_ROLES from board.py and NOT this set, and emits no
  * `is_exchange` field, so B4 cannot be derived from a payload — only re-asserted. The
  * duplication below is the ruled workaround, NOT the design: the fix is the poller emitting
@@ -827,9 +827,10 @@ var BoardQuote = (function () {
 var LiveBoard = (function () {
   "use strict";
 
-  /* board.py:34, duplicated. See the header: this is re-asserted, not derived, and the
+  /* board.EXCHANGES, duplicated. See the header: this is re-asserted, not derived, and the
    * parity test is what stops it drifting. */
-  var EXCHANGES = ["betfair_ex_eu", "matchbook"];
+  var EXCHANGES = ["betfair_ex_eu", "matchbook", "betopenly", "kalshi", "novig", "polymarket",
+                   "prophetx"];
 
   function isExchange(book) {
     return EXCHANGES.indexOf(book) !== -1;
@@ -1060,6 +1061,9 @@ var Gamma = (function () {
    * delivered twice rather than missed, and a map makes the duplicate free to absorb. */
   const rows = new Map();
   let highestId = 0;
+  /* The highest `region_seq` held. 0 until a row carrying one arrives — every row, once the
+   * counter DDL is applied (R-CL7); none before it, when the id check below still holds. */
+  let highestSeq = 0;
   let lastArrival = null;
   let backfilling = false;
   let gapsRefilled = 0;
@@ -1090,11 +1094,15 @@ var Gamma = (function () {
    * per region per poll, an unfiltered read would hand this page three different book lists
    * as consecutive snapshots. The filter is applied in both places rows enter: every REST
    * query through SELECT, and the Realtime join below. It does NOT make ids contiguous
-   * within a region — once regions interleave, the next eu row is not highestId + 1, and the
-   * interior-gap check on the socket path reads every arrival as a hole. That is F58, and it
-   * must be resolved before the region flip, not after. */
+   * within a region — once regions interleave, the next eu row is not highestId + 1 (F58).
+   * The database's per-region counter, `region_seq`, is what the gap check reads instead.
+   *
+   * `select=*`, NOT a column list, and that is load-bearing in both directions. Before the
+   * counter DDL exists, naming `region_seq` makes PostgREST refuse the query and the page loads
+   * nothing; after it, a list that omits it means history and backfill rows never carry it.
+   * `*` is the one form correct on both sides of the DDL. */
   const BOARD_REGION = "eu";
-  const SELECT = "select=id,captured_at,payload&region=eq." + BOARD_REGION;
+  const SELECT = "select=*&region=eq." + BOARD_REGION;
 
   /* The row count for BOARD_REGION, from Content-Range — the whole table only while the
    * poller writes one region. Held as a number rather than written
@@ -1127,7 +1135,7 @@ var Gamma = (function () {
    * SIXTY OLDEST rows of that gap, the cap would evict the rest, and the page would go
    * green showing two-hour-old quotes with a live badge above them. Descending returns
    * the newest, which is what the cap should be holding. A short gap is unaffected. */
-  function backfill(fromId) {
+  function backfill(fromId, countsAsRefill) {
     /* `fromId` is explicit because the caller is not always asking about the current high
      * water mark. On an interior gap the arriving row has ALREADY been absorbed, so
      * `highestId` has moved past the hole; querying from it returns nothing while the
@@ -1138,7 +1146,11 @@ var Gamma = (function () {
     backfilling = true;
     return query(SELECT + "&id=gt." + from + "&order=id.desc&limit=" + HISTORY_LIMIT, true)
       .then((res) => {
-        res.body.forEach((r) => absorb(r, true));
+        let added = 0;
+        res.body.forEach((r) => { if (absorb(r, true)) added += 1; });
+        /* A refill is counted when it REFILLED something — a row the page did not hold. Counting
+         * on detection reported every burned id and every false alarm as a gap filled. */
+        if (countsAsRefill === true && added > 0) gapsRefilled += 1;
         setTotal(res.range);
         render();
       })
@@ -1151,6 +1163,7 @@ var Gamma = (function () {
     const p = row.payload;
     rows.set(row.id, {
       id: row.id,
+      region_seq: (typeof row.region_seq === "number") ? row.region_seq : null,
       captured_at: row.captured_at,
       // The payload itself, not only its shape. The 60-row cap is what bounds this: the
       // page already downloaded these bytes, and the chart step reads back across them.
@@ -1162,6 +1175,9 @@ var Gamma = (function () {
       backfilled: viaBackfill === true
     });
     if (row.id > highestId) highestId = row.id;
+    if (typeof row.region_seq === "number" && row.region_seq > highestSeq) {
+      highestSeq = row.region_seq;
+    }
     lastArrival = Date.now();
     // The cap is what keeps an unbounded table from becoming an unbounded page.
     if (rows.size > HISTORY_LIMIT) {
@@ -1350,7 +1366,7 @@ var Gamma = (function () {
       });
     });
     return {
-      form: opts.form, unit: opts.unit, zero: opts.zero === true,
+      unit: opts.unit, zero: opts.zero === true,
       fmt: opts.fmt, points: out
     };
   }
@@ -1373,7 +1389,7 @@ var Gamma = (function () {
     for (const book in byBook) {
       if (byBook[book].length >= 2) lines.push({ book: book, points: byBook[book] });
     }
-    return { form: "line", unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
+    return { unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
              lines: lines,
              points: lines.reduce(function (a, ln) { return a.concat(ln.points); }, []) };
   }
@@ -1385,10 +1401,37 @@ var Gamma = (function () {
       const v = reduce(fr.board);
       if (v !== null && isFinite(v)) pts.push({ i: i, y: v });
     });
-    return { form: "line", unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
+    return { unit: opts.unit, zero: opts.zero === true, fmt: opts.fmt,
              lines: pts.length >= 2 ? [{ book: opts.label, points: pts }] : [],
              points: pts };
   }
+
+  /* =====================================================================
+   * THE FORMS — every way a pane can draw a series, and the only place a pane looks.
+   *
+   * VG-F14 (specs/GRAMMAR_GAP_CLOSURE.md): the form used to be declared twice. The registry
+   * entry named it and only the menu read that; each compute function named it again in what it
+   * returned, and the pane dispatched on that copy through comparisons ending in a bare `else`
+   * that drew dots. A form nothing implemented rendered as dots and said nothing — F32's shape
+   * again, on the form rather than the key.
+   *
+   * Now the entry's `form` is the only declaration. Below the registry, every entry that computes
+   * a pane series is resolved against this table when the page loads, and the pane draws through
+   * what was resolved. There is no default: a form this table does not hold throws before
+   * anything draws, so it cannot reach a renderer. An entry with no compute function draws
+   * nothing and is not resolved — the deferred lead-lag names `matrix`, which is not here, and
+   * giving it a compute makes the page refuse until it is.
+   *
+   * `clip`: the p95 ceiling applies (§9). `cut`: a clipped mark is cut rather than given a caret.
+   * A book form places one book's mark; a time form draws the whole pane.
+   * ===================================================================== */
+  const FORMS = {
+    dot: { clip: true, cut: false, place: drawDot },
+    bar: { clip: true, cut: true, place: drawBar },
+    dumbbell: { clip: true, cut: true, place: drawDumbbell },
+    line: { clip: false, pane: drawLinePane },
+    cells: { clip: false, pane: drawCellPane }
+  };
 
   const REGISTRY = [
     /* ---- BOOK: one mark per book, on the shared rank axis ---- */
@@ -1397,7 +1440,7 @@ var Gamma = (function () {
       note: "wide range makes a strip clearer than bars",
       compute: function (b) {
         return bookPoints(b, function (q) { return { y: q.hold }; },
-                          { form: "dot", unit: "%", fmt: pct });
+                          { unit: "%", fmt: pct });
       } },
 
     { key: "fair_pi", label: "fair π", family: FAM.BOOK, form: "dot",
@@ -1405,7 +1448,7 @@ var Gamma = (function () {
       note: "the devigged probability each book implies for side A",
       compute: function (b) {
         return bookPoints(b, function (q) { return { y: q.fair[0] }; },
-                          { form: "dot", unit: "%", fmt: pct });
+                          { unit: "%", fmt: pct });
       } },
 
     { key: "delta_ref", label: "Δ vs reference", family: FAM.BOOK, form: "bar",
@@ -1415,7 +1458,7 @@ var Gamma = (function () {
         return bookPoints(b, function (q) {
           const ok = comparable(b, q.book);
           return { y: ok ? q.delta_pp : 0, withheld: !ok };
-        }, { form: "bar", unit: "pp", zero: true, fmt: signed2 });
+        }, { unit: "pp", zero: true, fmt: signed2 });
       } },
 
     { key: "overround", label: "overround", family: FAM.BOOK, form: "bar",
@@ -1423,7 +1466,7 @@ var Gamma = (function () {
       note: "the vig made physical rather than stated",
       compute: function (b) {
         return bookPoints(b, function (q) { return { y: q.overround - 1.0 }; },
-                          { form: "bar", unit: "×", zero: true, fmt: pctRaw });
+                          { unit: "×", zero: true, fmt: pctRaw });
       } },
 
     { key: "dumbbell", label: "offered vs fair", family: FAM.BOOK, form: "dumbbell",
@@ -1432,7 +1475,7 @@ var Gamma = (function () {
       compute: function (b) {
         return bookPoints(b, function (q) {
           return { y: q.fair[0], y2: q.implied[0] };
-        }, { form: "dumbbell", unit: "%", fmt: pct });
+        }, { unit: "%", fmt: pct });
       } },
 
     { key: "beta", label: "β = v·γ per book", family: FAM.BOOK, form: "bar",
@@ -1441,7 +1484,7 @@ var Gamma = (function () {
       compute: function (b) {
         return bookPoints(b, function (q) {
           return { y: Gamma.additive(q.fair[0], q.hold) * 100.0 };
-        }, { form: "bar", unit: "pp", zero: true, fmt: signed2 });
+        }, { unit: "pp", zero: true, fmt: signed2 });
       } },
 
     /* ---- STANDALONE: the x is genuinely something else, so the panel is whole ---- */
@@ -1513,7 +1556,7 @@ var Gamma = (function () {
         });
         books.sort();
         cells.forEach(function (c) { c.v = Math.min(c.age / worst, 1) * 0.85 + 0.05; });
-        return { form: "cells", unit: "s", books: books, cells: cells,
+        return { unit: "s", books: books, cells: cells,
                  fmt: function (v) { return num(v, 0) + "s"; },
                  points: cells.map(function (c) { return { i: c.i, y: c.age }; }) };
       } },
@@ -1538,7 +1581,7 @@ var Gamma = (function () {
         for (const book in byBook) {
           if (byBook[book].length >= 2) lines.push({ book: book, points: byBook[book] });
         }
-        return { form: "line", unit: "pp", zero: true, fmt: signed2, lines: lines,
+        return { unit: "pp", zero: true, fmt: signed2, lines: lines,
                  points: lines.reduce(function (a, ln) { return a.concat(ln.points); }, []) };
       } },
     { key: "cum_dv", label: "cumulative Σ Δv", family: FAM.TIME, form: "line",
@@ -1561,6 +1604,20 @@ var Gamma = (function () {
     for (let i = 0; i < REGISTRY.length; i += 1) if (REGISTRY[i].key === key) return true;
     return false;
   }
+
+  /* VG-F14, fail closed the way `mustSeries` is. `hasOwnProperty`, so a name such as `toString`
+   * cannot resolve to something the table inherited. */
+  function mustForm(name) {
+    if (Object.prototype.hasOwnProperty.call(FORMS, name)) return FORMS[name];
+    throw new Error("unknown form: " + name);
+  }
+
+  /* The one place a pane series meets its form, run once as the page loads. Every entry with a
+   * compute function passes through here whether or not it is ever shown, so an unknown form
+   * cannot wait in an entry nobody opens, and a new entry passes through without being named. */
+  REGISTRY.forEach(function (sd) {
+    if (sd.compute) sd.drawsAs = mustForm(sd.form);
+  });
 
   /* ---- what the terminal is showing ---- */
   /* The landing chart is the convergence panel. A visitor arrives on one picture of what
@@ -2416,6 +2473,7 @@ var Gamma = (function () {
       const node = paneNodes[key];
       const f = paneFrame(i, n);
       const series = node.sdef.compute(board);
+      const form = node.sdef.drawsAs;
       node.frame = f;
       node.series = series;
 
@@ -2431,7 +2489,7 @@ var Gamma = (function () {
       /* The ceiling is taken over the VALUES, before zero is folded in: a signed series
        * whose points all sit near zero must not have its tail measured against a bound the
        * axis added. */
-      const clippable = series.form !== "line" && series.form !== "cells";
+      const clippable = form.clip;
       const capHi = clippable ? tailBound(ys, true) : null;
       const capLo = clippable ? tailBound(ys, false) : null;
       const cap = capHi !== null || capLo !== null;
@@ -2504,16 +2562,12 @@ var Gamma = (function () {
       node.info.setAttribute("visibility", INFO[key] ? "visible" : "hidden");
 
       /* A TIME series is not one mark per domain member: it is one PATH per book across
-       * every member, or a grid of cells. That is a new mark FORM, which the registry's
-       * `form` field already declared — "line", "heatmap" — and it is the one structural
-       * addition the time family needed. The axis, the crosshair, the sort control, the
-       * pane frames and the selection all took the new domain unchanged. */
-      if (series.form === "line") {
-        drawLinePane(node, series, y, board);
-        return;
-      }
-      if (series.form === "cells") {
-        drawCellPane(node, series, f);
+       * every member, or a grid of cells. That is a new mark FORM — `line` and `cells` in the
+       * table of forms — and it is the one structural addition the time family needed. The
+       * axis, the crosshair, the sort control, the pane frames and the selection all took the
+       * new domain unchanged. */
+      if (form.pane) {
+        form.pane(node, series, y, f, board);
         return;
       }
 
@@ -2557,26 +2611,7 @@ var Gamma = (function () {
         };
         m.hit.setAttribute("x", x - 6); m.hit.setAttribute("y", f.top);
         m.hit.setAttribute("width", 12); m.hit.setAttribute("height", f.h);
-        if (series.form === "line" || series.form === "cells") {
-          /* handled outside the per-point loop */
-        } else if (series.form === "bar") {
-          show(m.bar, !pt.withheld); show(m.dot, false); show(m.dot2, false);
-          show(m.link, false);
-          const y0 = y(0), y1 = y(vy);
-          m.bar.setAttribute("x", x - 3.5);
-          m.bar.setAttribute("width", 7);
-          m.bar.setAttribute("y", Math.min(y0, y1));
-          m.bar.setAttribute("height", Math.max(Math.abs(y1 - y0), 1));
-        } else if (series.form === "dumbbell") {
-          show(m.bar, false); show(m.dot, true); show(m.dot2, true); show(m.link, true);
-          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
-          m.dot2.setAttribute("cx", x); m.dot2.setAttribute("cy", y(clamp(pt.y2)));
-          m.link.setAttribute("x1", x); m.link.setAttribute("x2", x);
-          m.link.setAttribute("y1", y(vy)); m.link.setAttribute("y2", y(clamp(pt.y2)));
-        } else {
-          show(m.bar, false); show(m.dot, true); show(m.dot2, false); show(m.link, false);
-          m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
-        }
+        form.place(m, x, y, vy, pt, clamp, show);
 
         /* THE BREAK. A clipped mark is cut and labelled with the number it really holds.
          * Both nodes exist from the pane's first draw and are only shown or hidden, so a
@@ -2594,7 +2629,7 @@ var Gamma = (function () {
            * page-coloured stroke across a 4px dot erases the mark instead of breaking it,
            * which is what the first version did — so a dot gets a caret ABOVE it, in the
            * mark's own colour, pointing the way the value runs. */
-          const cut = series.form === "bar" || series.form === "dumbbell";
+          const cut = form.cut;
           /* The cut sits INSIDE the bar, not on its tip: a break drawn at the very top
            * edge only nicks it and reads as a rendering artefact rather than as a break. */
           const gy = cut ? py + (up ? 8 : -8) : py + (up ? -9 : 9);
@@ -2625,10 +2660,36 @@ var Gamma = (function () {
     drawLegend();
   }
 
+  /* The book forms: each places one book's mark and sets the visibility of all four of the
+   * pane's per-book nodes, so a node its form does not use stays hidden. Named `draw*` so the
+   * no-listener scan over draw functions still reaches this code. */
+  function drawDot(m, x, y, vy, pt, clamp, show) {
+    show(m.bar, false); show(m.dot, true); show(m.dot2, false); show(m.link, false);
+    m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
+  }
+
+  function drawBar(m, x, y, vy, pt, clamp, show) {
+    show(m.bar, !pt.withheld); show(m.dot, false); show(m.dot2, false);
+    show(m.link, false);
+    const y0 = y(0), y1 = y(vy);
+    m.bar.setAttribute("x", x - 3.5);
+    m.bar.setAttribute("width", 7);
+    m.bar.setAttribute("y", Math.min(y0, y1));
+    m.bar.setAttribute("height", Math.max(Math.abs(y1 - y0), 1));
+  }
+
+  function drawDumbbell(m, x, y, vy, pt, clamp, show) {
+    show(m.bar, false); show(m.dot, true); show(m.dot2, true); show(m.link, true);
+    m.dot.setAttribute("cx", x); m.dot.setAttribute("cy", y(vy));
+    m.dot2.setAttribute("cx", x); m.dot2.setAttribute("cy", y(clamp(pt.y2)));
+    m.link.setAttribute("x1", x); m.link.setAttribute("x2", x);
+    m.link.setAttribute("y1", y(vy)); m.link.setAttribute("y2", y(clamp(pt.y2)));
+  }
+
   /* One path per series, keyed by book, `d` reassigned on arrival. The nodes are created
    * once, exactly like the per-member marks, so an arriving row moves geometry and replaces
    * nothing. */
-  function drawLinePane(node, series, y, board) {
+  function drawLinePane(node, series, y, f, board) {
     /* The ramp's domain over a line pane is the extent of the per-book MEANS, not of every
      * point: a pane is coloured by which books sit high, not by which instants do. */
     let lo = Infinity, hi = -Infinity;
@@ -2676,8 +2737,8 @@ var Gamma = (function () {
     }
   }
 
-  /* books × domain, one rect each. The heatmap form. */
-  function drawCellPane(node, series, f) {
+  /* books × domain, one rect each. The cells form. */
+  function drawCellPane(node, series, y, f) {
     const books = series.books;
     const rowH = (f.bot - f.top - 20) / Math.max(books.length, 1);
     const cw = (W - PAD_L - PAD_R) / Math.max(bookOrder.length, 1);
@@ -3791,17 +3852,22 @@ var Gamma = (function () {
            * In both cases the page stays connected, keeps receiving, reaches the table's
            * maximum id, and holds a set with a hole in it. Every internal invariant is
            * satisfied — contiguity is the one property that is not, and the page can check
-           * it because the row carries its own id. */
+           * it because the row carries its own sequence.
+           *
+           * WHICH SEQUENCE (F58, R-CL7). `region_seq` is contiguous within this page's region
+           * however many regions the table holds; `id` is contiguous only while it holds one.
+           * The id check is the fallback for rows written before the counter existed, and for a
+           * page loaded before it that has not yet absorbed a row carrying one. */
           const before = highestId;
-          const skipped = before > 0 && rec.id > before + 1;
+          const seq = (typeof rec.region_seq === "number") ? rec.region_seq : null;
+          const skipped = (seq !== null && highestSeq > 0)
+            ? seq > highestSeq + 1
+            : (before > 0 && rec.id > before + 1);
           if (absorb(rec, false)) {
             if (tableTotal !== null) tableTotal += 1;
             render();
           }
-          if (skipped) {
-            gapsRefilled += 1;
-            backfill(before);
-          }
+          if (skipped) backfill(before, true);
         }
       }
     };
@@ -3863,7 +3929,7 @@ var Gamma = (function () {
         lo: node.y ? node.y.lo : null,
         hi: node.y ? node.y.hi : null,
         zero: !!node.series.zero,
-        form: node.series.form || "dot",
+        form: node.sdef.form,
         points: (node.series.points || []).map(function (pt) {
           return { book: pt.book, y: pt.y, y2: pt.y2 === undefined ? null : pt.y2 };
         })
@@ -3891,7 +3957,12 @@ var Gamma = (function () {
       return {
         held: rows.size,
         highestId: highestId,
+        highestSeq: highestSeq,
         ids: Array.from(rows.keys()).sort(function (a, b) { return a - b; }),
+        seqs: Array.from(rows.values())
+          .map(function (r) { return r.region_seq; })
+          .filter(function (v) { return typeof v === "number"; })
+          .sort(function (a, b) { return a - b; }),
         conn: $("conn").textContent,
         gapsRefilled: gapsRefilled
       };
