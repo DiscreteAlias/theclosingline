@@ -87,6 +87,11 @@
   #composer button { align-self: flex-end; height: 40px; }
   .chip { display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--muted);
           border: 1px solid var(--rule); border-radius: 3px; padding: 0 6px; margin-right: 6px; }
+  /* The attribution nflverse's CC BY 4.0 asks for, on the page that shows the data. Scheme-less on
+     purpose: this page carries no absolute URL to any host but its Supabase project
+     (test_live_output_safety.py), so the references are text, not links. */
+  .attribution { font-size: 11px; color: var(--muted); padding: 4px 20px 8px; margin: 0;
+                 border-top: 1px solid var(--rule); }
   @media (max-width: 720px) { main { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 </head>
@@ -126,6 +131,7 @@
       <textarea id="input" placeholder="Ask about the board. Shift+Enter for a new line." required></textarea>
       <button type="submit" class="primary" id="send">send</button>
     </form>
+    <p class="attribution">NFL statistics: nflverse-data (github.com/nflverse/nflverse-data), CC BY 4.0 (creativecommons.org/licenses/by/4.0); restructured into tables; not endorsed by nflverse.</p>
   </section>
 </main>
 
