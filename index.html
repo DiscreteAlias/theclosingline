@@ -438,9 +438,8 @@
         fill="currentColor">CLOSING LINE</text>
 </svg>
 </h1>
-    <p class="subtitle">A research terminal for sports betting. Live sharp-market
-      microstructure, strategy testing under anytime-valid inference, and a season record
-      that certifies itself with a stated error rate. Full platform incoming.</p>
+    <p class="subtitle">Live sharp-market microstructure for sports betting. Full platform
+      incoming.</p>
   </header>
 
   <div class="toolbar">
@@ -3248,12 +3247,33 @@ var Gamma = (function () {
     });
   }
 
+  /* 12.5, not 12, and the half is the whole point — F79. A tick's INK runs from its
+   * baseline's ascent to its baseline, `[y - 8, y]` for an 11px face, and the baseline sits
+   * 3.5 below the row's centre: so about the centre the ink is `[-4.5, +3.5]`, NOT symmetric.
+   * Against a chip of `[-8, +8]` the ink therefore meets it over `d` in `(-11.5, +12.5)`, and
+   * a symmetric rule must take the LARGER of the two to cover all of it. At 12 it covered
+   * neither side fully on the high end: `d` in `[12, 12.5)` left a sliver of ink under the
+   * chip, half a pixel wide, and that half pixel is what reddened PR #180's reticle check on
+   * CI while passing locally — a correct page failing a gate on one glyph-metric shift.
+   *
+   * The cost of taking the larger is over-hiding by 1.0 on the low side, `d` in
+   * `(-12.5, -11.5]`, where no ink meets the chip and a tick is hidden anyway. Nothing
+   * asserts against over-hiding and 15 of the fixture's 19 chip positions hide no tick at
+   * all, so `a_hidden_tick_comes_back` keeps its headroom.
+   *
+   * IT IS STILL A CONSTANT, and F79's complaint is unchanged by this: 12.5 is
+   * `8 (chip half) + 4.5 (ink above the row centre)` for THIS face at THIS size, read from
+   * `measureText` on this machine, and the rule reads none of the three. It is now exact
+   * rather than half a pixel short. A face with a different cap height, a different tick
+   * font-size, a different `badge-bg` height, or a formatter whose glyphs descend all move
+   * the true bound and leave this number where it is. The change that would close it for
+   * good is measuring the drawn extents here the way the check does. */
   function hideScaleTicksIn(box) {
     eachSlopeTick(function (t) {
       if (t.getAttribute("visibility") === "hidden") return;
       const ty = parseFloat(t.getAttribute("y"));
       if (isNaN(ty)) return;
-      if (Math.abs((ty - 3.5) - (box.top + box.bot) / 2) < 12) {
+      if (Math.abs((ty - 3.5) - (box.top + box.bot) / 2) < 12.5) {
         t.__hiddenByBadge = true;
         t.setAttribute("visibility", "hidden");
       }

@@ -2068,6 +2068,14 @@ var ChartForms = (function () {
       .replace(/"/g, "&quot;");
   }
 
+  /* The class EVERY rule below is scoped to, and therefore the class BOTH serialisers must
+   * put on the root. `toSvg` set it from the start; `mount` did not, so on the page the whole
+   * stylesheet matched nothing: `.axis`, `.grid` and `.zero` resolved to `stroke: none`, every
+   * text to `fill: rgb(0,0,0)` on a #121216 panel, and `.mark`/`.analytic-line` lost
+   * `fill: none`, which filled each line path black. Measured in headless Chromium against the
+   * bytes served from www.theclosingline.io; specs/nfl-capture-parameterization.md §F82. */
+  var ROOT_CLASS = "tcl-chart";
+
   var STYLE =
     ".tcl-chart{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}" +
     ".tcl-chart .axis{stroke:#2a2a32;stroke-width:1}" +
@@ -2090,7 +2098,7 @@ var ChartForms = (function () {
   function toSvg(m) {
     if (!m || !m.ok) return "";
     var out = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " + m.width + " " +
-              m.height + "\" width=\"100%\" class=\"tcl-chart\" role=\"img\" data-series=\"" +
+              m.height + "\" width=\"100%\" class=\"" + ROOT_CLASS + "\" role=\"img\" data-series=\"" +
               esc(m.series) + "\"><title>" + esc(m.title) + "</title><style>" + STYLE + "</style>";
     m.elements.forEach(function (e) {
       out += "<" + e.tag;
@@ -2107,6 +2115,7 @@ var ChartForms = (function () {
     var NS = "http://www.w3.org/2000/svg";
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     svg.setAttribute("viewBox", "0 0 " + m.width + " " + m.height);
+    svg.setAttribute("class", ROOT_CLASS);
     svg.setAttribute("data-series", m.series);
     var st = doc.createElementNS(NS, "style");
     st.textContent = STYLE;
