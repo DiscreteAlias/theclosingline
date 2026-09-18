@@ -1316,6 +1316,35 @@ var ChartSpec = (function () {
     return frames;
   }
 
+  /* A time series with NOTHING TO DRAW is refused, with the reason (F99). Two usable frames say the
+   * panel existed twice; they do not say the series has a point. `dispersion_t` on `us_ex` is the case
+   * that was measured: all five venues are exchanges, an exchange price is never compared (B4), so no
+   * frame has two comparable books, and the series came back ok:true with 10 frames and no points —
+   * a success whose summary was `lines: []`. Returns the reason, or null when something is drawn. */
+  function nothingDrawn(sd, spec, frames, body) {
+    var drawn = body.cells ? body.cells.length : body.lines.length;
+    if (drawn) return null;
+    var where = "region " + spec.region + ", event " + spec.event + ", " + spec.market + ", " +
+      frames.length + " frames";
+    if (sd.key === "dispersion_t") {
+      var withTwo = 0, exchangesOnly = 0;
+      frames.forEach(function (fr) {
+        var n = chartable(fr.board).length;
+        if (n >= 2) withTwo += 1;
+        if (n === 0 && fr.board.exchanges.length) exchangesOnly += 1;
+      });
+      if (exchangesOnly === frames.length) {
+        return "dispersion_t has nothing to compare (" + where + "): every quote is an exchange's, and " +
+          "an exchange price is never compared with a book's (B4), so no frame has two comparable " +
+          "books. read_board reports this panel as it is: n_matched 0";
+      }
+      return "dispersion_t needs two comparable books (the reference and the books on its line; " +
+        "off-line books and exchanges are not compared, B6 and B4) in at least 2 frames, and " +
+        withTwo + " had them (" + where + ")";
+    }
+    return sd.key + " has nothing to draw (" + where + "): no book has a usable quote in two frames";
+  }
+
   function compute(raw, pollList) {
     var v = validate(raw);
     if (!v.ok) return { ok: false, error: v.errors.join("; ") };
@@ -1337,6 +1366,8 @@ var ChartSpec = (function () {
                  " polls (" + frames.length + " found)" };
       }
       body = sd.compute(frames);
+      var nothing = nothingDrawn(sd, spec, frames, body);
+      if (nothing) return { ok: false, error: nothing };
       body.ok = true; body.spec = spec; body.key = sd.key; body.label = sd.label;
       body.family = sd.family; body.form = sd.form;
       body.frames = frames.map(function (fr) { return { at: fr.at, id: fr.id }; });
