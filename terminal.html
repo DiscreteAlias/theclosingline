@@ -102,18 +102,53 @@
   .ref.failed { border-color: var(--bad); }
   .ref-title { font-size: 13px; overflow-wrap: anywhere; }
   .ref .chips { display: flex; flex-wrap: wrap; gap: 4px 0; }
+  /* The chart's place in this view, the same `#n` its tab leads with. It is what tells two charts
+     apart when nothing else does: a stored chart holds its event's id and not its name, so two
+     games with the same series, region, market and poll wrote the same tab (measured 2026-09-18). */
+  .ref { position: relative; padding-right: 40px; }
+  .ref-n { position: absolute; top: 8px; right: 10px; font-family: var(--mono); font-size: 11px;
+           letter-spacing: .04em; color: var(--ink); opacity: .7; }
   /* ---- the chart panel: BESIDE the conversation while there is room, OVER it when there is
      not. A <section>, so it is already a flex column with min-width 0. ---- */
   .panel { border-left: 1px solid var(--rule); background: var(--panel); }
   .panel-head { display: flex; align-items: stretch; border-bottom: 1px solid var(--rule); }
   .tabs { flex: 1; min-width: 0; display: flex; overflow-x: auto; scrollbar-width: thin; }
-  .tab { flex: none; border: 0; border-right: 1px solid var(--rule); border-bottom: 2px solid transparent;
-         border-radius: 0; background: transparent; color: var(--muted); padding: 9px 12px;
+  /* Which side of the strip holds tabs that are not showing: a fade on that side, set by the script
+     from the strip's scroll offset. At 0 px both stops coincide and the mask is opaque. */
+  .tabs { --fade-l: 0px; --fade-r: 0px;
+          -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+          mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent); }
+  .tabs[data-more~="left"] { --fade-l: 28px; }
+  .tabs[data-more~="right"] { --fade-r: 28px; }
+  /* A tab is TWO ROWS — `#n series ×` over `market · region · time` — each with its own ellipsis,
+     because one row cannot shrink: measured 2026-09-18, the narrowest one-row tab that still told
+     every label apart was 202 px and the narrowest natural tab 195, the differing token (market,
+     region) being the one a right-hand ellipsis eats first. Two rows tell them apart at 13
+     characters and the ellipsis. THE FLOOR IS THOSE 14 ADVANCES, in `ch` and the tab's own
+     letter-spacing so that it follows the device's font, plus the tab's 24 px of padding and 1 px
+     of border. Tabs shrink to it before the strip scrolls; the active tab never shrinks. */
+  .tab { flex: 0 1 auto; min-width: calc(14 * (1ch + .04em) + 24px + 1px);
+         display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 6px; row-gap: 1px;
+         align-items: baseline; align-content: center; text-align: left;
+         border: 0; border-right: 1px solid var(--rule); border-bottom: 2px solid transparent;
+         border-radius: 0; background: transparent; color: var(--muted); padding: 7px 12px;
          font-family: var(--mono); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }
   .tab:hover { color: var(--ink); }
-  .tab.is-active { color: var(--ink); background: var(--panel2); border-bottom-color: var(--accent); }
+  .tab.is-active { flex: none; color: var(--ink); background: var(--panel2); border-bottom-color: var(--accent); }
   .tab.failed { color: var(--bad); }
-  /* Outside the strip's scroll area, so it stays reachable however many tabs there are. */
+  .tab-n { color: var(--ink); opacity: .7; }
+  .tab-s, .tab-d { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tab-d { grid-column: 1 / -1; opacity: .8; }
+  /* A <span>, because a button cannot hold a button; the strip's one listener reads `data-close`.
+     Its padding is hit area and its negative margin gives the same space back to the row. */
+  .tab-x { padding: 6px 8px; margin: -6px -8px -6px -2px; border-radius: 3px; color: var(--muted); }
+  .tab-x:hover { color: var(--ink); background: var(--rule); }
+  /* Outside the strip's scroll area, so they stay reachable however many tabs there are. The
+     steppers are BOTH after the strip, so showing them never moves a tab sideways. */
+  .tabs-step { flex: none; border: 0; border-left: 1px solid var(--rule); border-radius: 0;
+               background: transparent; color: var(--muted); font-family: var(--mono); font-size: 14px;
+               padding: 0 9px; }
+  .tabs-step:hover:not(:disabled) { color: var(--ink); }
   #panel-close { flex: none; border: 0; border-left: 1px solid var(--rule); border-radius: 0;
                  background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11px;
                  letter-spacing: .08em; text-transform: uppercase; }
@@ -151,6 +186,11 @@
     main.with-panel { grid-template-columns: 240px 1fr; }
     .panel { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 20; border-left: 0; }
   }
+  /* The swipe. While a finger drags it the panel follows with no easing; let go short of a
+     dismissal and it eases back. A transform lays nothing out, so the conversation underneath
+     neither reflows nor scrolls. */
+  @media (prefers-reduced-motion: no-preference) { .panel { transition: transform .15s ease-out; } }
+  .panel[data-drag="1"] { transition: none; }
   @media (max-width: 720px) { main, main.with-panel { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 </head>
@@ -199,6 +239,8 @@
   <section id="panel" class="panel" aria-label="charts" hidden>
     <div class="panel-head">
       <div id="tabs" class="tabs" role="tablist" aria-label="charts in this thread"></div>
+      <button type="button" id="tabs-prev" class="tabs-step" aria-label="scroll the tabs left" hidden>‹</button>
+      <button type="button" id="tabs-next" class="tabs-step" aria-label="scroll the tabs right" hidden>›</button>
       <button type="button" id="panel-close" aria-label="close the chart panel">close</button>
     </div>
     <div id="panel-body" class="panel-body" role="tabpanel">
@@ -2473,11 +2515,21 @@ var ChartForms = (function () {
    * message's first chart is `c1` — measured 2026-09-18: a two-message thread's three cards read
    * c1, c2, c1. A chart is identified by (message, chart). On the live path the message id does
    * not exist until `done`, so until then the message's ordinal in this view stands in for it
-   * (`p3:c1`), and `done` replaces it (`41:c1`). */
+   * (`p3:c1`), and `done` replaces it (`41:c1`).
+   *
+   * CLOSED. A chart is stored on its message and its card stays in the thread, so closing a tab
+   * deletes nothing: it is a flag on the tab, and the tab keeps its place in `tabs`, its key, its
+   * rows, `c` and `m`. `history` is the tabs in the order they were last active — where the panel
+   * goes when the active tab is the one closed. Neither is stored, so reopening the thread brings
+   * every tab back. */
   const FLOOR_W = 480;                       /* 21 books at a 14 px pitch + the forms' 174 px of padding */
   const WIDE_QUERY = "(min-width: 1112px)";  /* the CSS breakpoint's other statement */
   const RESIZE_MS = 150;
-  const panel = { tabs: [], active: null, open: false, epoch: 0, messages: 0 };
+  const SWIPE_PX = 96;                       /* rightward travel that dismisses the overlay */
+  const SWIPE_SLOP = 12;                     /* travel before the panel starts to follow the finger */
+  const SWIPE_EDGE = 24;                     /* a touch starting left of this is left to the browser */
+  const panel = { tabs: [], active: null, open: false, epoch: 0, messages: 0, history: [] };
+  let swipe = null;
   const refsByMessage = new Map();
   let readoutCells = null;
   let resizeTimer = null;
@@ -2493,6 +2545,7 @@ var ChartForms = (function () {
   function resetPanel() {
     panel.tabs = [];
     panel.active = null;
+    panel.history = [];
     panel.open = false;
     panel.messages = 0;
     panel.epoch += 1;
@@ -2518,6 +2571,16 @@ var ChartForms = (function () {
     return typeof iso === "string" && iso.length >= 19 ? iso.slice(0, 19).replace("T", " ") : "";
   }
 
+  /* What a tab says, as its two rows. ONE function, called where the tab is made and exposed as
+   * `__terminal.panel.label`, so that what is measured is this page's label and not a copy of it.
+   * A series that reads no row (gamma) has no market and no region, and its second row is the
+   * poll time or nothing. */
+  function tabLabel(spec, capturedAt) {
+    const when = clock(capturedAt);
+    return [String(spec.series || "chart"),
+            [spec.market, spec.region, when ? when.slice(11) : null].filter(Boolean).join(" · ")];
+  }
+
   function registerChart(msgEl, chart, messageId) {
     const refs = refsOf(msgEl);
     const spec = chart.spec || {};
@@ -2532,9 +2595,18 @@ var ChartForms = (function () {
       chart: { id: String(chart.id || ""), spec: spec, captured_at: chart.captured_at || null,
                ids: (Array.isArray(chart.ids) ? chart.ids : []).filter((id) => typeof id === "number" && isFinite(id)) },
       status: "idle", error: null, c: null, m: null, width: 0, held: null, loading: null,
-      card: null, button: null
+      closed: false, card: null, button: null
     };
     const when = clock(tab.chart.captured_at);
+    /* The chart's place in this view, on its card AND its tab. Tabs are made in message-then-
+     * emission order, which a reopened thread reproduces, so the number is the same next time. */
+    const ordinal = "#" + (tab.seq + 1);
+    const part = (cls, text) => {
+      const node = document.createElement("span");
+      node.className = cls;
+      node.textContent = text;
+      return node;
+    };
 
     /* The card: what the chart leaves in the thread. Always "go to", never a toggle — clicking
      * the card of the chart already showing closes nothing (live.html lost a pane to one gesture
@@ -2557,17 +2629,29 @@ var ChartForms = (function () {
         chips.appendChild(chip);
       });
     card.appendChild(chips);
+    card.appendChild(part("ref-n", ordinal));
+    /* A card is also how a CLOSED tab comes back: `openTab` clears the flag, and the tab is where
+     * it always was, because closing never took it out of the strip. */
     card.addEventListener("click", () => { openTab(tab); });
     refs.node.appendChild(card);
     tab.card = card;
 
-    /* The tab: no listener of its own — the strip carries one, bound once, that outlives it. */
+    /* The tab: no listener of its own — the strip carries one, bound once, that outlives it, and
+     * it is that listener that tells the `×` from the rest of the tab. `Delete` closes too. */
+    const rows = tabLabel(spec, tab.chart.captured_at);
     const button = document.createElement("button");
     button.setAttribute("type", "button");
     button.setAttribute("role", "tab");
     button.setAttribute("data-tab", String(tab.seq));
-    button.textContent = [spec.series, spec.region, spec.market, when ? when.slice(11) : null]
-      .filter(Boolean).join(" · ");
+    button.setAttribute("aria-keyshortcuts", "Delete");
+    button.setAttribute("title", [ordinal].concat(rows).filter(Boolean).join(" · "));
+    button.appendChild(part("tab-n", ordinal));
+    button.appendChild(part("tab-s", rows[0]));
+    const x = part("tab-x", "×");
+    x.setAttribute("data-close", "1");
+    x.setAttribute("aria-hidden", "true");
+    button.appendChild(x);
+    button.appendChild(part("tab-d", rows[1]));
     $("tabs").appendChild(button);
     tab.button = button;
 
@@ -2620,6 +2704,9 @@ var ChartForms = (function () {
   }
 
   function openTab(tab) {
+    tab.closed = false;
+    panel.history = panel.history.filter((t) => t !== tab);
+    panel.history.push(tab);
     panel.active = tab;
     panel.open = true;
     projectPanel();
@@ -2632,6 +2719,35 @@ var ChartForms = (function () {
 
   function closePanel() {
     panel.open = false;
+    projectPanel();
+  }
+
+  /* Where the panel goes when the ACTIVE tab is closed. The tab that was active before it, if it
+   * is still open: it has been opened, so going back to it reads nothing. Otherwise the nearest
+   * open tab to the right, then to the left — and that one may never have been opened, so it
+   * reads its rows as any first activation does. */
+  function tabAfter(tab) {
+    let i;
+    for (i = panel.history.length - 1; i >= 0; i -= 1) {
+      if (panel.history[i] !== tab && !panel.history[i].closed) return panel.history[i];
+    }
+    for (i = tab.seq + 1; i < panel.tabs.length; i += 1) if (!panel.tabs[i].closed) return panel.tabs[i];
+    for (i = tab.seq - 1; i >= 0; i -= 1) if (!panel.tabs[i].closed) return panel.tabs[i];
+    return null;
+  }
+
+  /* HIDES a tab; deletes nothing. The chart is on its message and its card stays in the thread,
+   * so the tab keeps its place, its key and everything computed for it, and its card opens it
+   * again. With no tab left to show, the panel closes. */
+  function closeTab(tab) {
+    if (tab.closed) return;
+    tab.closed = true;
+    if (panel.active === tab) {
+      const next = panel.open ? tabAfter(tab) : null;
+      if (next) { openTab(next); return; }
+      panel.active = null;
+      panel.open = false;
+    }
     projectPanel();
   }
 
@@ -2659,6 +2775,7 @@ var ChartForms = (function () {
       t.button.className = "tab" + (on ? " is-active" : "") + bad;
       t.button.setAttribute("aria-selected", String(on));
       t.button.setAttribute("data-chart", keyOf(t));
+      t.button.hidden = t.closed;
       t.card.className = "ref" + (on ? " is-open" : "") + bad;
       t.card.setAttribute("data-chart", keyOf(t));
     });
@@ -2688,13 +2805,106 @@ var ChartForms = (function () {
       tab.status === "failed" ? tab.error + (short ? " (" + tab.held.got + " of " + tab.held.named + " rows still held)" : "") :
       short ? "drawn from " + tab.held.got + " of the " + tab.held.named + " rows this chart names; the rest are no longer held" : "";
     if (panel.open && tab && tab.button.scrollIntoView) tab.button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    projectStrip();
+  }
+
+  /* THE STRIP'S SCROLL OFFSET IS THE ONE PIECE OF PANEL STATE THE BROWSER OWNS — a person scrolls
+   * it natively — so this, and only this, reads the DOM to find out what is showing: whether any
+   * tab is hidden, and on which side. The steppers are shown when the strip would overflow
+   * WITHOUT them. Asking whether it overflows as it stands would oscillate: showing them narrows
+   * the strip and hiding them widens it, and a strip within their width of fitting flips forever. */
+  function projectStrip() {
+    const strip = $("tabs"), prev = $("tabs-prev"), next = $("tabs-next");
+    const steppers = prev.hidden ? 0 : (prev.offsetWidth || 0) + (next.offsetWidth || 0);
+    const over = panel.open && strip.scrollWidth > strip.clientWidth + steppers + 1;
+    prev.hidden = !over;
+    next.hidden = !over;
+    const left = over && strip.scrollLeft > 1;
+    const right = over && strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+    prev.disabled = !left;
+    next.disabled = !right;
+    strip.setAttribute("data-more", [left ? "left" : "", right ? "right" : ""].filter(Boolean).join(" "));
+  }
+
+  function stepStrip(dir) {
+    const strip = $("tabs");
+    strip.scrollLeft += dir * Math.max(120, strip.clientWidth * 0.8);
+    projectStrip();
+  }
+
+  /* ---------- the swipe: below the breakpoint, a rightward drag puts the overlay away ----------
+   * PASSIVE listeners: nothing here can block a native scroll, and nothing needs to. The rule is
+   * "a swipe that SCROLLED NOTHING dismisses" — the three scrollers inside the panel are read at
+   * `touchstart` and again at every move and at the end, and a gesture during which any of them
+   * moved was theirs. On a phone the chart is wider than the panel and rests at scrollLeft 0, so
+   * a rightward swipe over it dismisses until a reader has scrolled the chart, and after that
+   * scrolls it back first.
+   *
+   * Dismissal is `closePanel()` and moves NO FOCUS. Measured 2026-09-18: `card.focus()` on a card
+   * above the fold took #messages from 6388 to 3200, and the conversation's scroll position is
+   * what the overlay exists to preserve.
+   *
+   * NOT MEASURED, and not measurable with a synthetic gesture: that a browser goes on delivering
+   * touchmove/touchend while it pans a scroller natively; what iOS Safari's left-edge back-swipe
+   * does with a touch SWIPE_EDGE is meant to leave alone; pull-to-refresh. */
+  function scrollersNow() {
+    return [$("chart-scroll").scrollLeft, $("tabs").scrollLeft, $("panel-body").scrollTop];
+  }
+
+  function dragTo(px) {
+    const el = $("panel");
+    el.setAttribute("data-drag", px ? "1" : "0");
+    el.style.transform = px ? "translateX(" + px + "px)" : "";
+  }
+
+  function swipeTo(touch) {
+    swipe.dx = touch.clientX - swipe.x;
+    swipe.dy = touch.clientY - swipe.y;
+    const now = scrollersNow();
+    if (swipe.at.some((v, i) => v !== now[i])) swipe.scrolled = true;
+  }
+
+  function swipeHolds(travel) {
+    return !swipe.scrolled && swipe.dx >= travel && swipe.dx >= 2 * Math.abs(swipe.dy);
+  }
+
+  /* A second finger raises its own `touchstart`, with two touches, and that disarms the swipe:
+   * every gesture that reaches `touchmove` armed is one finger's. */
+  function swipeStart(e) {
+    swipe = null;
+    dragTo(0);
+    if (isWide() || !panel.open || e.touches.length !== 1) return;
+    if (e.touches[0].clientX < SWIPE_EDGE) return;
+    swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, dy: 0, scrolled: false, at: scrollersNow() };
+  }
+
+  function swipeMove(e) {
+    if (!swipe) return;
+    swipeTo(e.touches[0]);
+    dragTo(swipeHolds(SWIPE_SLOP) ? swipe.dx : 0);
+  }
+
+  function swipeEnd(e) {
+    if (!swipe) return;
+    if (e.changedTouches && e.changedTouches.length) swipeTo(e.changedTouches[0]);
+    const dismiss = swipeHolds(SWIPE_PX);
+    swipe = null;
+    dragTo(0);
+    if (dismiss) closePanel();
+  }
+
+  function swipeCancel() {
+    swipe = null;
+    dragTo(0);
   }
 
   function panelState() {
     return {
       open: panel.open, epoch: panel.epoch, active: panel.active ? keyOf(panel.active) : null,
+      history: panel.history.map(keyOf),
       tabs: panel.tabs.map((t) => ({
         key: keyOf(t), seq: t.seq, messageId: t.messageId, series: t.chart.spec.series || null,
+        closed: t.closed,
         ids: t.chart.ids.length, status: t.status, error: t.error, held: t.held,
         width: t.width, height: t.m ? t.m.height : 0, marks: t.m ? t.m.marks.length : 0,
         elements: t.m ? t.m.elements.length : 0, computed: !!t.c
@@ -2915,19 +3125,47 @@ var ChartForms = (function () {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
     });
     /* ONE listener for every tab there will ever be, on the strip — a container that outlives
-     * each tab and each thread — rather than one per button made inside a loop. */
+     * each tab and each thread — rather than one per button made inside a loop. A click that
+     * passes a `data-close` on its way up to the tab closes it; any other opens it. */
     $("tabs").addEventListener("click", (e) => {
       let el = e.target;
+      let closing = false;
       while (el && el.getAttribute) {
+        if (el.getAttribute("data-close") !== null) closing = true;
         const seq = el.getAttribute("data-tab");
         if (seq !== null && seq !== undefined && seq !== "") {
           const tab = panel.tabs[Number(seq)];
-          if (tab) openTab(tab);
+          if (tab && closing) closeTab(tab);
+          else if (tab) openTab(tab);
           return;
         }
         el = el.parentNode;
       }
     });
+    /* `Delete` on a focused tab, the keyboard's `×`. Focus then goes to the tab the panel landed
+     * on — inside the panel, so it scrolls the strip and never the conversation. */
+    $("tabs").addEventListener("keydown", (e) => {
+      if (e.key !== "Delete" || !e.target || !e.target.getAttribute) return;
+      const seq = e.target.getAttribute("data-tab");
+      const tab = seq === null || seq === undefined || seq === "" ? null : panel.tabs[Number(seq)];
+      if (!tab) return;
+      closeTab(tab);
+      if (panel.open && panel.active && panel.active.button.focus) panel.active.button.focus();
+    });
+    /* Hidden tabs, reached three ways: the steppers, a vertical wheel turned sideways (a mouse
+     * has no other way to scroll a horizontal strip), and the strip's own native scroll — which
+     * is why the fade and the steppers are re-read on `scroll`, whoever caused it. */
+    $("tabs-prev").addEventListener("click", () => { stepStrip(-1); });
+    $("tabs-next").addEventListener("click", () => { stepStrip(1); });
+    $("tabs").addEventListener("wheel", (e) => {
+      if (e.deltaX || !e.deltaY) return;
+      $("tabs").scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    }, { passive: true });
+    $("tabs").addEventListener("scroll", projectStrip, { passive: true });
+    $("panel").addEventListener("touchstart", swipeStart, { passive: true });
+    $("panel").addEventListener("touchmove", swipeMove, { passive: true });
+    $("panel").addEventListener("touchend", swipeEnd, { passive: true });
+    $("panel").addEventListener("touchcancel", swipeCancel, { passive: true });
     $("panel-close").addEventListener("click", closePanel);
     /* The panel's width is the chart's width, so when one changes the other is redone — from the
      * kept series: no request, no recompute. Without this the chart is a picture of the width
@@ -2937,6 +3175,7 @@ var ChartForms = (function () {
       resizeTimer = setTimeout(() => {
         resizeTimer = null;
         if (panel.open && panel.active && panel.active.status === "ready") draw(panel.active);
+        projectStrip();
       }, RESIZE_MS);
     });
   }
@@ -2968,6 +3207,13 @@ var ChartForms = (function () {
         return tab ? openTab(tab).then(panelState) : Promise.reject(new Error("no such chart: " + key));
       },
       close: function () { closePanel(); return panelState(); },
+      closeTab: function (key) {
+        const tab = panel.tabs.filter((t) => keyOf(t) === key)[0];
+        if (!tab) throw new Error("no such chart: " + key);
+        closeTab(tab);
+        return panelState();
+      },
+      label: function (spec, capturedAt) { return tabLabel(spec, capturedAt); },
       state: panelState
     }
   };
