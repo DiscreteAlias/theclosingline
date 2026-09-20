@@ -6,10 +6,13 @@
 <title>the closing line · terminal (beta)</title>
 <!--
   The beta terminal (R-CL15, R-CL16). Rendered by realdata/closingline/terminal.py, which
-  inlines the six modules verbatim and substitutes only scalars (live.py's F19 guard).
+  inlines the six modules and session.js verbatim, embeds the typeface, and substitutes only
+  scalars (live.py's F19 guard).
 
   WHAT THIS PAGE DOES, and with which credential:
-    signs a user in with Supabase Auth (email + password) and holds the access token;
+    holds the session the sign-in page stored (signin.html, through session.js), refreshes it
+      before it reads anything, and with no session stored goes to the sign-in page from <head>
+      before the body is parsed — it has no sign-in box of its own (specs/terminal-ui-port.md);
     reads that user's threads and messages with the PUBLISHABLE key plus the token, so
       PostgREST runs as `authenticated` under the RLS policies 005_terminal.sql proposes;
     reads board rows with the publishable key ALONE (anon), the credential the live page reads
@@ -22,47 +25,178 @@
       the open thread as a tab strip, and reads a chart's rows when its tab is first opened.
   No package, no CDN, no HTML strings: every node is built with createElement/textContent.
 -->
+<script>
+  const SUPABASE_URL     = "https://eddbffgqmqwebpcsaewj.supabase.co";
+  const SUPABASE_KEY     = "sb_publishable_8Rp9NOSJPyKToxHQqFm4dQ_AlRRN81g";
+  const SNAPSHOTS_TABLE  = "snapshots";
+  const FUNCTION_NAME    = "terminal";
+  const POLL_INDEX_LIMIT = 200;
+  const SIGNIN_URL       = "signin.html";
+</script>
+<script>
+/* realdata/closingline/session.js, inlined verbatim: the same bytes the sign-in page carries. */
+/* The beta terminal's session: where it is kept, what counts as one, and the calls that move it.
+ *
+ * ONE set of bytes on TWO pages. realdata/closingline/signin.py inlines this file verbatim into the
+ * sign-in page and the terminal inlines the same file; tests pin each page to it. The pages hand the
+ * session to each other through storage and through nothing else, so a key or a shape that differed
+ * between them would not be an error anybody saw: the terminal would find no session and send the
+ * reader to sign in, and the sign-in page would find one and send the reader back.
+ *
+ * It reads the two globals each page declares, SUPABASE_URL and SUPABASE_KEY, and only when it calls.
+ * It touches no DOM and never navigates: where to go is each page's own decision.
+ */
+var TclSession = (function () {
+  "use strict";
+
+  /* The key and the shape the terminal wrote before this file existed, so that a session stored by
+   * either version is read by the other. */
+  var KEY = "tcl.terminal.session";
+
+  /* What counts as a session. Anything else in the slot — JSON that does not parse, an object with a
+   * token missing — is NO session, on both pages alike, so they cannot disagree about whether one is
+   * held. `user` is required because the terminal names the reader from it. */
+  function shaped(s) {
+    return !!s && typeof s === "object"
+      && typeof s.access_token === "string" && s.access_token !== ""
+      && typeof s.refresh_token === "string" && s.refresh_token !== ""
+      && typeof s.expires_at === "number" && isFinite(s.expires_at)
+      && !!s.user && typeof s.user === "object";
+  }
+
+  function load() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      var s = raw ? JSON.parse(raw) : null;
+      return shaped(s) ? s : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /* Stores, then READS BACK: true only when the next load() will return this session. A browser that
+   * refuses site storage throws here or quietly keeps nothing, and either way the answer is false. */
+  function save(s) {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* the read-back decides */ }
+    var back = load();
+    return !!back && back.access_token === s.access_token;
+  }
+
+  function clear() {
+    try { localStorage.removeItem(KEY); } catch (e) { /* nothing was held */ }
+  }
+
+  /* A GoTrue grant, in the shape that is stored. */
+  function fromGrant(body) {
+    return {
+      access_token: body.access_token,
+      refresh_token: body.refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + (body.expires_in || 3600),
+      user: { id: body.user && body.user.id, email: body.user && body.user.email }
+    };
+  }
+
+  /* A POST to GoTrue with the publishable key, and the user's token when there is one. `keepalive`
+   * lets the request outlive the page that made it: a request still in flight when its document is
+   * unloaded is otherwise the browser's to cancel. */
+  function call(path, body, token, keepalive) {
+    var headers = { "apikey": SUPABASE_KEY, "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = "Bearer " + token;
+    var init = { method: "POST", headers: headers, body: JSON.stringify(body) };
+    if (keepalive) init.keepalive = true;
+    return fetch(SUPABASE_URL + "/auth/v1/" + path, init).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; });
+    });
+  }
+
+  /* Seconds the access token has left. */
+  function remaining(s) {
+    return s.expires_at - Math.floor(Date.now() / 1000);
+  }
+
+  /* A new session from the refresh token. Resolves to it; resolves to null when GoTrue REFUSES the
+   * refresh token (a 4xx: it is spent or revoked, and the session is over); REJECTS when GoTrue could
+   * not be asked or failed (a network error, a 5xx), because then nothing is known about the session
+   * and signing the reader out would be a guess. */
+  function refresh(s) {
+    return call("token?grant_type=refresh_token", { refresh_token: s.refresh_token }).then(function (r) {
+      if (r.status === 200 && r.body && r.body.access_token) return fromGrant(r.body);
+      if (r.status >= 400 && r.status < 500) return null;
+      throw new Error("the session could not be refreshed (HTTP " + r.status + ")");
+    });
+  }
+
+  function logout(s) {
+    return call("logout", {}, s.access_token, true);
+  }
+
+  return { KEY: KEY, load: load, save: save, clear: clear, fromGrant: fromGrant, call: call,
+           remaining: remaining, refresh: refresh, logout: logout };
+})();
+
+</script>
+<script>
+  /* Signed out, this page has nothing to show and nothing to read. The document is hidden first,
+   * so that no part of the app paints while the sign-in page loads; there is no sign-in box here
+   * for an app shell to show under (F93). */
+  if (!TclSession.load()) { document.documentElement.hidden = true; location.replace(SIGNIN_URL); }
+</script>
 <style>
+  /* Inconsolata: SIL Open Font License 1.1, Copyright 2006 The Inconsolata Project Authors. The
+     licence ships beside the font as realdata/closingline/inconsolata-OFL.txt, and the font's own
+     name table carries it too. Instanced at wdth 100 and wght 400-700 and subset to Latin from
+     google/fonts at 0b58fb3; the recipe is in specs/terminal-ui-port.md. EMBEDDED, because this page
+     reaches no origin but its Supabase project's. What the subset cannot draw — Greek, which
+     Inconsolata does not have at all — falls to the next face in --mono, glyph by glyph. */
+  @font-face {
+    font-family: "Inconsolata";
+    src: url("data:font/woff2;base64,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") format("woff2");
+    font-weight: 400 700;
+    font-style: normal;
+    font-display: block;
+  }
+  /* The landing page's tokens (live.html :root), by name and by value. --bad is this terminal's own:
+     the landing page has no colour for a failure. One family for everything, Inconsolata first. */
   :root {
-    --page: #0a0a0c; --panel: #121216; --panel2: #17171c; --rule: #2a2a32;
-    --ink: #e6e6ea; --muted: #8a8a93; --accent: #22d3ee; --margin: #f59e0b; --bad: #f87171;
-    --ramp-lo: #4a6a78; --ramp-mid: #ba8757; --ramp-hi: #f59e0b;
-    --mono: ui-monospace, Menlo, Consolas, monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --page: #0a0a0c; --panel: #101014; --surface: #16161c; --rule: #2a2a32;
+    --primary: #fafafa; --muted: #8a8a93; --accent: #22d3ee; --margin: #f59e0b; --bad: #f87171;
+    --mono: "Inconsolata", 'SF Mono','Cascadia Code','JetBrains Mono','Roboto Mono',ui-monospace,monospace;
   }
   * { box-sizing: border-box; }
   /* F42, recurring here. `[hidden]` is a USER-AGENT rule, the lowest weight in the cascade, and
      `main { display: grid }` and `section { display: flex }` below are author rules that beat it.
      Measured 2026-09-18: signed out, #app carried `hidden = true` and computed `display: grid`,
-     868 px of shell under the sign-in box. live.html has carried this rule since F42. */
+     868 px of shell under the sign-in box (F93). That box is on its own page now, so nothing here
+     hides the app; the panel, a closed tab and the steppers still hide, through this rule. */
   [hidden] { display: none !important; }
+  /* ONE COLUMN, the header and then `main`, so that `main` takes whatever height the header leaves
+     and no header height is written anywhere. `main` used to be `calc(100% - 45px)`, and 45 was near
+     the height of a header showing no sign-out control — the header the chrome probe measured (F127).
+     Signed in, the header was 55.3 px and the document scrolled by the difference. `main` is
+     `flex: 1` with `min-height: 0`: a flex item's automatic minimum is its content, so without it a
+     long conversation makes `main` — and the document — as tall as the conversation again. */
   html, body { height: 100%; }
-  body { margin: 0; background: var(--page); color: var(--ink); font-family: var(--sans);
-         font-size: 14px; line-height: 1.45; }
-  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+  body { margin: 0; display: flex; flex-direction: column; background: var(--page); color: var(--primary);
+         font-family: var(--mono); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+  /* It wraps rather than push the page wider than a phone: signed in at 360 px, the reader's email
+     and the sign-out control did not fit beside the rest, and the page was 41 px too wide (F127). */
+  header { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 10px 16px;
            border-bottom: 1px solid var(--rule); }
   .wordmark { font-family: var(--mono); letter-spacing: .14em; text-transform: uppercase;
-              font-size: 12px; color: var(--ink); }
+              font-size: 12px; color: var(--primary); }
   .beta { font-family: var(--mono); font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
           color: var(--margin); border: 1px solid var(--margin); padding: 1px 6px; border-radius: 3px; }
   .spacer { flex: 1; }
-  #who { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  button { font: inherit; color: var(--ink); background: var(--panel2); border: 1px solid var(--rule);
+  #who { font-family: var(--mono); font-size: 12px; color: var(--muted);
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; color: var(--primary); background: var(--surface); border: 1px solid var(--rule);
            border-radius: 4px; padding: 6px 10px; cursor: pointer; }
   button:hover { border-color: var(--muted); }
   button.primary { border-color: var(--accent); color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
-  input, textarea { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule);
-                    border-radius: 4px; padding: 8px 10px; width: 100%; }
-  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
-  .auth { max-width: 380px; margin: 60px auto; padding: 24px; background: var(--panel);
-          border: 1px solid var(--rule); border-radius: 6px; }
-  .auth h1 { font-size: 14px; margin: 0 0 14px; font-family: var(--mono); letter-spacing: .13em;
-             text-transform: uppercase; color: var(--muted); }
-  .auth label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
-  .auth .row { display: flex; gap: 8px; margin-top: 14px; }
-  .note { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 1.4em; }
-  .note.bad { color: var(--bad); }
+  textarea { font: inherit; color: var(--primary); background: var(--panel); border: 1px solid var(--rule);
+             border-radius: 4px; padding: 8px 10px; width: 100%; }
+  textarea:focus { outline: none; border-color: var(--accent); }
   /* The ROW is pinned to the viewport. An implicit auto row grows with its content — measured
      2026-09-18 with 80 messages: the DOCUMENT scrolled (4721 px in a 913 px viewport), #messages
      never did (clientHeight = scrollHeight, so scrollDown() was a no-op) and the composer sat 3.8
@@ -70,7 +204,7 @@
      declaration, on the row, for every child of `main`: `min-height: 0` on the sections does
      the same and was measured redundant beside it, so it is not here. */
   main { display: grid; grid-template-columns: 240px 1fr; grid-template-rows: minmax(0, 1fr);
-         height: calc(100% - 45px); position: relative; }
+         flex: 1; min-height: 0; position: relative; }
   /* Three columns while the panel is open. Their minima — 240 + 360 + 512 — are the breakpoint
      below, where there is no longer room for a panel BESIDE the conversation. 512, not the
      chart's 480 floor: the panel's border and its body's padding sit outside the chart, and a
@@ -82,12 +216,12 @@
   #threads li { padding: 8px 8px; border-radius: 4px; cursor: pointer; font-size: 13px;
                 color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #threads li:hover { background: var(--panel); }
-  #threads li.current { background: var(--panel2); color: var(--ink); }
+  #threads li.current { background: var(--surface); color: var(--primary); }
   section { display: flex; flex-direction: column; min-width: 0; }
   #messages { flex: 1; overflow: auto; padding: 16px 20px; }
   .msg { max-width: 820px; margin: 0 0 14px; padding: 10px 14px; border-radius: 6px; white-space: pre-wrap;
          overflow-wrap: anywhere; }
-  .msg.user { background: var(--panel2); border: 1px solid var(--rule); }
+  .msg.user { background: var(--surface); border: 1px solid var(--rule); }
   .msg.assistant { background: var(--panel); border: 1px solid var(--rule); }
   .msg.loose { color: var(--muted); font-style: italic; }
   .msg.failed { border-color: var(--bad); color: var(--muted); }
@@ -107,7 +241,7 @@
      games with the same series, region, market and poll wrote the same tab (measured 2026-09-18). */
   .ref { position: relative; padding-right: 40px; }
   .ref-n { position: absolute; top: 8px; right: 10px; font-family: var(--mono); font-size: 11px;
-           letter-spacing: .04em; color: var(--ink); opacity: .7; }
+           letter-spacing: .04em; color: var(--primary); opacity: .7; }
   /* ---- the chart panel: BESIDE the conversation while there is room, OVER it when there is
      not. A <section>, so it is already a flex column with min-width 0. ---- */
   .panel { border-left: 1px solid var(--rule); background: var(--panel); }
@@ -125,30 +259,35 @@
      every label apart was 202 px and the narrowest natural tab 195, the differing token (market,
      region) being the one a right-hand ellipsis eats first. Two rows tell them apart at 13
      characters and the ellipsis. THE FLOOR IS THOSE 14 ADVANCES, in `ch` and the tab's own
-     letter-spacing so that it follows the device's font, plus the tab's 24 px of padding and 1 px
-     of border. Tabs shrink to it before the strip scrolls; the active tab never shrinks. */
-  .tab { flex: 0 1 auto; min-width: calc(14 * (1ch + .04em) + 24px + 1px);
+     letter-spacing, plus the tab's 24 px of padding and 1 px of border — AND ONE PIXEL MORE. A row
+     exactly 14 advances wide is a rounding away from 13: laid out in 1/64 px, 14 advances of
+     Inconsolata came to 83.156 px against 83.16 needed and the last character went, 21 labels of
+     118 colliding; the same was true, by 0.001 px, of the face the floor was first measured in,
+     and an instrument reading whole pixels hid it (F115's addendum). Measured 2026-09-19: at 13
+     advances labels collide however much margin is given; at 14 with the pixel, none do, in either
+     face. Tabs shrink to it before the strip scrolls; the active tab never shrinks. */
+  .tab { flex: 0 1 auto; min-width: calc(14 * (1ch + .04em) + 24px + 1px + 1px);
          display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 6px; row-gap: 1px;
          align-items: baseline; align-content: center; text-align: left;
          border: 0; border-right: 1px solid var(--rule); border-bottom: 2px solid transparent;
          border-radius: 0; background: transparent; color: var(--muted); padding: 7px 12px;
          font-family: var(--mono); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }
-  .tab:hover { color: var(--ink); }
-  .tab.is-active { flex: none; color: var(--ink); background: var(--panel2); border-bottom-color: var(--accent); }
+  .tab:hover { color: var(--primary); }
+  .tab.is-active { flex: none; color: var(--primary); background: var(--surface); border-bottom-color: var(--accent); }
   .tab.failed { color: var(--bad); }
-  .tab-n { color: var(--ink); opacity: .7; }
+  .tab-n { color: var(--primary); opacity: .7; }
   .tab-s, .tab-d { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tab-d { grid-column: 1 / -1; opacity: .8; }
   /* A <span>, because a button cannot hold a button; the strip's one listener reads `data-close`.
      Its padding is hit area and its negative margin gives the same space back to the row. */
   .tab-x { padding: 6px 8px; margin: -6px -8px -6px -2px; border-radius: 3px; color: var(--muted); }
-  .tab-x:hover { color: var(--ink); background: var(--rule); }
+  .tab-x:hover { color: var(--primary); background: var(--rule); }
   /* Outside the strip's scroll area, so they stay reachable however many tabs there are. The
      steppers are BOTH after the strip, so showing them never moves a tab sideways. */
   .tabs-step { flex: none; border: 0; border-left: 1px solid var(--rule); border-radius: 0;
                background: transparent; color: var(--muted); font-family: var(--mono); font-size: 14px;
                padding: 0 9px; }
-  .tabs-step:hover:not(:disabled) { color: var(--ink); }
+  .tabs-step:hover:not(:disabled) { color: var(--primary); }
   #panel-close { flex: none; border: 0; border-left: 1px solid var(--rule); border-radius: 0;
                  background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11px;
                  letter-spacing: .08em; text-transform: uppercase; }
@@ -162,6 +301,13 @@
      one CSS pixel at every panel width; narrower than the chart's floor, this wrapper scrolls. */
   .chart-scroll { overflow-x: auto; }
   .chart-scroll svg { display: block; }
+  /* Chart text in the page's face. chart_forms.js injects a stylesheet of its own, scoped to
+     `.tcl-chart`, that names the terminal's former mono stack; that file's bytes are pinned to the
+     function's vendor module and are not this page's to change, so the family is set here, on the
+     one root every chart is mounted into, which outranks the class. The family only: the chart's
+     sizes and colours stay its own. Its layout budgets 6.6 px a character (CHAR_PX) and Inconsolata
+     at 11 px advances 5.5, so a label has more room than it needs, never less. */
+  #panel-svg { font-family: var(--mono); }
   .why { color: var(--bad); font-size: 12px; margin: 10px 0 0; min-height: 1.4em; }
   .why.note { color: var(--muted); }
   .status { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
@@ -200,25 +346,10 @@
   <span class="beta">terminal · beta</span>
   <span class="spacer"></span>
   <span id="who"></span>
-  <button id="signout" hidden>sign out</button>
+  <button id="signout">sign out</button>
 </header>
 
-<div id="auth" class="auth">
-  <h1>Sign in</h1>
-  <form id="auth-form">
-    <label for="email">email</label>
-    <input id="email" type="email" autocomplete="username" required>
-    <label for="password">password</label>
-    <input id="password" type="password" autocomplete="current-password" minlength="8" required>
-    <div class="row">
-      <button type="submit" class="primary" id="signin">sign in</button>
-      <button type="button" id="signup">create account</button>
-    </div>
-  </form>
-  <p id="auth-note" class="note"></p>
-</div>
-
-<main id="app" hidden>
+<main id="app">
   <aside>
     <button id="new-thread">new thread</button>
     <ul id="threads"></ul>
@@ -2310,22 +2441,15 @@ var ChartForms = (function () {
 
 </script>
 <script>
-  const SUPABASE_URL     = "https://eddbffgqmqwebpcsaewj.supabase.co";
-  const SUPABASE_KEY     = "sb_publishable_8Rp9NOSJPyKToxHQqFm4dQ_AlRRN81g";
-  const SNAPSHOTS_TABLE  = "snapshots";
-  const FUNCTION_NAME    = "terminal";
-  const POLL_INDEX_LIMIT = 200;
-</script>
-<script>
 (function () {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const STORAGE = "tcl.terminal.session";
   const FUNCTION_URL = SUPABASE_URL + "/functions/v1/" + FUNCTION_NAME;
+  const LOGOUT_WAIT_MS = 2000;
 
-  /* ---------- session: held in localStorage, refreshed before it expires ---------- */
-  let session = null;
+  /* ---------- session: the one the sign-in page stored, through session.js ---------- */
+  let session = TclSession.load();
   let currentThread = null;
   let sending = false;
   let chartsRendered = 0;
@@ -2335,69 +2459,38 @@ var ChartForms = (function () {
    * for fifteen — so a request registers a promise per id and a second caller waits on it. */
   const inflight = new Map();
 
-  function loadSession() {
-    try {
-      const raw = localStorage.getItem(STORAGE);
-      session = raw ? JSON.parse(raw) : null;
-    } catch (e) { session = null; }
-  }
-  function saveSession() {
-    try {
-      if (session) localStorage.setItem(STORAGE, JSON.stringify(session));
-      else localStorage.removeItem(STORAGE);
-    } catch (e) { /* private mode: the session lives for the page only */ }
-  }
-  function setSession(body) {
-    session = {
-      access_token: body.access_token,
-      refresh_token: body.refresh_token,
-      expires_at: Math.floor(Date.now() / 1000) + (body.expires_in || 3600),
-      user: { id: body.user && body.user.id, email: body.user && body.user.email }
-    };
-    saveSession();
-  }
-
-  function authCall(path, body, token) {
-    const headers = { "apikey": SUPABASE_KEY, "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = "Bearer " + token;
-    return fetch(SUPABASE_URL + "/auth/v1/" + path, {
-      method: "POST", headers: headers, body: JSON.stringify(body)
-    }).then((r) => r.json().catch(() => ({})).then((j) => ({ status: r.status, body: j })));
-  }
-
-  async function signIn(email, password) {
-    const r = await authCall("token?grant_type=password", { email: email, password: password });
-    if (r.status !== 200 || !r.body.access_token) {
-      throw new Error(r.body.error_description || r.body.msg || r.body.error || ("sign-in failed (HTTP " + r.status + ")"));
-    }
-    setSession(r.body);
-  }
-
-  async function signUp(email, password) {
-    const r = await authCall("signup", { email: email, password: password });
-    if (r.status !== 200) {
-      throw new Error(r.body.error_description || r.body.msg || r.body.error || ("sign-up failed (HTTP " + r.status + ")"));
-    }
-    if (r.body.access_token) { setSession(r.body); return "signed in"; }
-    return "account created: confirm the email we sent, then sign in";
-  }
-
+  /* True when the session may be used now. A token with a minute or more left is used as it is;
+   * otherwise it is refreshed first — at boot too, before any read: the page used to read threads
+   * with whatever token was stored, an expired one included (F128), and only a send refreshed.
+   * GoTrue REFUSING the refresh token ends the session. GoTrue not answering does not: nothing is
+   * known about the session then, the reader is told, and it is kept for the next try. */
   async function refreshIfNeeded() {
     if (!session) return false;
-    if (session.expires_at - Math.floor(Date.now() / 1000) > 60) return true;
-    const r = await authCall("token?grant_type=refresh_token", { refresh_token: session.refresh_token });
-    if (r.status !== 200 || !r.body.access_token) { signOut(); return false; }
-    setSession(r.body);
+    if (TclSession.remaining(session) > 60) return true;
+    let next;
+    try {
+      next = await TclSession.refresh(session);
+    } catch (err) {
+      setStatus("could not refresh the session: " + err.message, true);
+      return false;
+    }
+    if (!next) { signOut(); return false; }
+    session = next;
+    TclSession.save(session);
     return true;
   }
 
+  /* Cleared HERE first, so that a reload cannot bring the session back whatever the network does;
+   * then the logout is waited for, bounded, and only then does the page go. A logout sent as the
+   * page leaves is the browser's to cancel, which is why session.js sends it with `keepalive` and
+   * why this waits for it as well. */
   function signOut() {
-    if (session) authCall("logout", {}, session.access_token).catch(() => {});
+    const was = session;
     session = null;
-    saveSession();
-    currentThread = null;
-    resetPanel();
-    show();
+    TclSession.clear();
+    const out = was ? TclSession.logout(was).catch(() => {}) : Promise.resolve();
+    return Promise.race([out, new Promise((r) => setTimeout(r, LOGOUT_WAIT_MS))])
+      .then(() => { location.replace(SIGNIN_URL); });
   }
 
   /* ---------- REST: threads and messages with the user's token; the board without it ---------- */
@@ -2982,7 +3075,9 @@ var ChartForms = (function () {
 
   async function send(text) {
     if (sending) return;
-    if (!(await refreshIfNeeded())) { setStatus("signed out", true); return; }
+    /* Refused, the session is over and the page is on its way to the sign-in page; unreachable, the
+     * status already says so. Either way this turn is not sent. */
+    if (!(await refreshIfNeeded())) return;
     sending = true;
     $("send").disabled = true;
     addMessage("user", text, new Date().toISOString());
@@ -3068,51 +3163,17 @@ var ChartForms = (function () {
   }
 
   /* ---------- chrome ---------- */
+  /* Signed in is the only state this page shows: without a session it has already gone to the
+   * sign-in page from <head>. The session is refreshed before the first read (F128). */
   function show() {
-    const signedIn = !!session;
-    $("auth").hidden = signedIn;
-    $("app").hidden = !signedIn;
-    $("signout").hidden = !signedIn;
-    $("who").textContent = signedIn ? (session.user.email || session.user.id) : "";
-    if (signedIn) loadThreads().catch((err) => setStatus("threads: " + err.message, true));
+    $("who").textContent = session.user.email || session.user.id || "";
+    return refreshIfNeeded()
+      .then((ok) => (ok ? loadThreads() : undefined))
+      .catch((err) => setStatus("threads: " + err.message, true));
   }
 
   function bind() {
-    $("auth-form").addEventListener("submit", (e) => {
-      e.preventDefault();
-      const note = $("auth-note");
-      note.className = "note";
-      note.textContent = "signing in";
-      signIn($("email").value.trim(), $("password").value)
-        .then(() => { note.textContent = ""; show(); })
-        .catch((err) => { note.className = "note bad"; note.textContent = err.message; });
-    });
-    $("signup").addEventListener("click", () => {
-      const note = $("auth-note");
-      /* The button is type="button", so the form's `required` and `minlength` never run for
-       * it — only the submit button (sign in) triggers them — and an empty email reached
-       * GoTrue, which reads a signup with no email as an anonymous sign-up and answers
-       * "Anonymous sign-ins are disabled" (measured 2026-09-17). The check lives here, where
-       * the values are read, and no call is made until both are present. */
-      const email = $("email").value.trim();
-      const password = $("password").value;
-      if (!email || !password) {
-        note.className = "note bad";
-        note.textContent = "enter an email and a password to create an account";
-        return;
-      }
-      if (password.length < 8) {
-        note.className = "note bad";
-        note.textContent = "the password must be at least 8 characters";
-        return;
-      }
-      note.className = "note";
-      note.textContent = "creating account";
-      signUp(email, password)
-        .then((msg) => { note.textContent = msg; show(); })
-        .catch((err) => { note.className = "note bad"; note.textContent = err.message; });
-    });
-    $("signout").addEventListener("click", signOut);
+    $("signout").addEventListener("click", () => { signOut(); });
     $("new-thread").addEventListener("click", newThread);
     $("composer").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -3218,9 +3279,12 @@ var ChartForms = (function () {
     }
   };
 
-  loadSession();
-  bind();
-  show();
+  /* With no session the <head> script has already hidden the page and sent it to sign in, so
+   * nothing is bound and nothing is read; `__terminal` above is still defined, for the tests. */
+  if (session) {
+    bind();
+    show();
+  }
 })();
 </script>
 </body>
