@@ -242,6 +242,18 @@ var TclSession = (function () {
   .ref { position: relative; padding-right: 40px; }
   .ref-n { position: absolute; top: 8px; right: 10px; font-family: var(--mono); font-size: 11px;
            letter-spacing: .04em; color: var(--primary); opacity: .7; }
+  /* A comparison the page recomputed. It sits in the answer, not in the status line, because the
+     status line is overwritten by the next tool and a figure a reader wants to look at twice must
+     outlive the turn. Monospaced and right-aligned so the column of numbers reads as a column. */
+  .compare { margin: 8px 0 2px; padding: 8px 10px; border: 1px solid var(--rule);
+             border-radius: 2px; font-family: var(--mono); font-size: 12px; max-width: 34em; }
+  .compare-head { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+                  text-transform: uppercase; margin-bottom: 6px; }
+  .compare-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
+  .compare-k { overflow-wrap: anywhere; }
+  .compare-v { white-space: nowrap; color: var(--primary); }
+  .compare-row.withheld .compare-v { color: var(--muted); font-size: 11px; white-space: normal;
+                                     text-align: right; }
   /* ---- the chart panel: BESIDE the conversation while there is room, OVER it when there is
      not. A <section>, so it is already a flex column with min-width 0. ---- */
   .panel { border-left: 1px solid var(--rule); background: var(--panel); }
@@ -265,8 +277,14 @@ var TclSession = (function () {
      118 colliding; the same was true, by 0.001 px, of the face the floor was first measured in,
      and an instrument reading whole pixels hid it (F115's addendum). Measured 2026-09-19: at 13
      advances labels collide however much margin is given; at 14 with the pixel, none do, in either
-     face. Tabs shrink to it before the strip scrolls; the active tab never shrinks. */
-  .tab { flex: 0 1 auto; min-width: calc(14 * (1ch + .04em) + 24px + 1px + 1px);
+     face. Tabs shrink to it before the strip scrolls; the active tab never shrinks.
+     AND THE ORDINAL TAKES FROM THE SERIES LABEL, so the floor carries `--ord-extra` (F133). `#n`
+     shares the series row's grid line, and each character it gains takes one advance from the
+     label beside it: from `#100` nine of the 118 labels collided, `hold_s…` against `hold_d…`,
+     eighteen from `#1000`, in both faces. `registerChart` sets `--ord-extra` to the ordinal's
+     length less three, so `#1`–`#99` — every ordinal the floor was derived over — resolve at
+     0 and compute the expression this line held before, and only `#100` and beyond are wider. */
+  .tab { flex: 0 1 auto; min-width: calc((14 + var(--ord-extra, 0)) * (1ch + .04em) + 24px + 1px + 1px);
          display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 6px; row-gap: 1px;
          align-items: baseline; align-content: center; text-align: left;
          border: 0; border-right: 1px solid var(--rule); border-bottom: 2px solid transparent;
@@ -308,6 +326,13 @@ var TclSession = (function () {
      sizes and colours stay its own. Its layout budgets 6.6 px a character (CHAR_PX) and Inconsolata
      at 11 px advances 5.5, so a label has more room than it needs, never less. */
   #panel-svg { font-family: var(--mono); }
+  /* THE CROSSHAIR'S HIGHLIGHT, as a page rule over the marks the renderer already labels with
+     `data-book`: nothing in chart_forms.js changes, exactly as the port set the chart's face. The
+     root carries the hovered book, so one attribute write per pointer move repaints the chart. */
+  #panel-svg[data-hover] [data-book] { opacity: .35; }
+  #panel-svg[data-hover] [data-hit] { opacity: 1; }
+  .readout .cell.hover .label { color: var(--accent); }
+  .readout .cell.hover b { font-variant-numeric: tabular-nums; }
   .why { color: var(--bad); font-size: 12px; margin: 10px 0 0; min-height: 1.4em; }
   .why.note { color: var(--muted); }
   .status { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
@@ -2543,6 +2568,12 @@ var ChartForms = (function () {
           /* A card and a tab per stored chart, from the spec alone. NO ROW IS READ HERE: a tab
            * pays for its rows when it is first opened. */
           (m.charts || []).forEach((c) => registerChart(body.parentNode, c, m.id));
+          /* A comparison, on the other hand, IS read back: the trace kept the spec and the ids, so
+           * the block is recomputed from those rows rather than stored as text. A reopened thread
+           * shows the same figures because it runs the same code over the same rows. */
+          ((m.trace && m.trace.tool_calls) || []).forEach((tc) => {
+            if (tc && tc.recompute) renderCompare(body.parentNode, tc.recompute);
+          });
         });
         projectPanel();
         scrollDown();
@@ -2738,6 +2769,11 @@ var ChartForms = (function () {
     button.setAttribute("data-tab", String(tab.seq));
     button.setAttribute("aria-keyshortcuts", "Delete");
     button.setAttribute("title", [ordinal].concat(rows).filter(Boolean).join(" · "));
+    /* The floor's allowance for a long ordinal (F133). `#1`–`#99` are three characters or fewer
+     * and set 0, which is the value the floor's `var()` falls back to and the expression it had
+     * before this existed; `#100` sets 1 and `#1000` sets 2, one advance each, which is what the
+     * ordinal takes from the series label beside it. */
+    button.style.setProperty("--ord-extra", String(Math.max(0, ordinal.length - 3)));
     button.appendChild(part("tab-n", ordinal));
     button.appendChild(part("tab-s", rows[0]));
     const x = part("tab-x", "×");
@@ -2767,6 +2803,11 @@ var ChartForms = (function () {
         tab.width = width;
       }
       const svg = $("panel-svg");
+      /* `mount` rewrites `class` and `data-series` and empties the root, but leaves any other
+       * attribute where it is — so the hover of the chart just replaced would survive onto the new
+       * one and dim a book it knows nothing about. Cleared here, where the redraw happens. */
+      svg.removeAttribute("data-hover");
+      if (hoverCell) hoverCell.textContent = "—";
       ChartForms.mount(tab.m, svg, document);
       svg.setAttribute("width", String(tab.m.width));
       svg.setAttribute("height", String(tab.m.height));
@@ -3005,6 +3046,268 @@ var ChartForms = (function () {
     };
   }
 
+  /* ---------- the crosshair: one listener on the root, the model read at event time ----------
+   *
+   * WHY THE ROOT. `ChartForms.mount` empties `#panel-svg` and repopulates it on every redraw, so a
+   * listener on a mark — or on any child — is destroyed by the next draw and stops silently. The
+   * root outlives every redraw, which is what the markup says it is for.
+   *
+   * WHY THE MODEL IS READ HERE AND NOT CAPTURED. `draw` replaces `tab.m` with a new model whenever
+   * the width changes, so a closure over `m` keeps answering from the geometry of the width before
+   * the resize: confidently, and wrongly, with nothing on the screen saying so. Every lookup starts
+   * from `panel.active`.
+   *
+   * WHAT A HOVERED NUMBER CARRIES. The readout row already names this chart's region, event,
+   * market, poll and reference book; the crosshair adds the book, the value formatted by the
+   * series' own formatter, and — for a series that reads one side — the ROLE that side is, from
+   * `c.meta.roles`. A number whose side is not on the screen is the defect this avoids (XW-F38 is
+   * the wider gap, and is not closed by this).
+   *
+   * TOUCH IS REFUSED, not forgotten: the panel already reads touch for the swipe and the chart pans
+   * inside its wrapper on a phone, so a crosshair on touch would contend with both. Tap-to-read is
+   * a ruling, not an oversight. */
+  const HOVER_FORMS = { dot: 1, bar: 1, dumbbell: 1, scatter: 1, slope: 1 };
+  let hoverCell = null;
+
+  /* INSIDE THE PLOT, or nothing. Without this the nearest mark answers from anywhere — including
+   * a pointer that has left the chart entirely, which would put a book and a number on the screen
+   * for a position that is not on the chart. The frame is the renderer's own plotting box; the
+   * margin is the mark radius, so a point on a mark at the edge still reads. */
+  const HOVER_MARGIN = 8;
+  /* TWO FRAME SHAPES, because the renderer has two: a book chart's frame is `{top, bot}` — its
+   * marks span the width by rank — and a line, cells or slope chart's is `{x0, x1, y0, y1}`.
+   * Neither is normalised in chart_forms.js, and this page does not change that file, so the
+   * reading of it is here, once, and the number a test hovers at comes from the same function. */
+  function plotBox(m) {
+    const f = m.frame || {};
+    const n = (v, fallback) => (typeof v === "number" ? v : fallback);
+    return { x0: n(f.x0, 0), x1: n(f.x1, m.width),
+             y0: n(f.y0, n(f.top, 0)), y1: n(f.y1, n(f.bot, m.height)) };
+  }
+  function insidePlot(m, x, y) {
+    const b = plotBox(m);
+    return x >= b.x0 - HOVER_MARGIN && x <= b.x1 + HOVER_MARGIN
+        && y >= b.y0 - HOVER_MARGIN && y <= b.y1 + HOVER_MARGIN;
+  }
+
+  function markAt(m, x, y) {
+    if (!m || !Array.isArray(m.marks) || !m.marks.length || !HOVER_FORMS[m.form]) return null;
+    if (!insidePlot(m, x, y)) return null;
+    let best = null, bestD = Infinity;
+    m.marks.forEach((mk) => {
+      let d;
+      if (m.form === "scatter") {
+        if (typeof mk.cx !== "number" || typeof mk.cy !== "number") return;
+        d = Math.abs(mk.cx - x) + Math.abs(mk.cy - y) * 0.5;
+      } else if (m.form === "slope") {
+        /* Read at the ENDS only: between them each book is a curve whose shape lives in
+         * chart_forms.js, and a value read there would be invented. Which end is named below. */
+        const x0 = m.frame ? m.frame.x0 : null, x1 = m.frame ? m.frame.x1 : null;
+        if (typeof x0 !== "number" || typeof x1 !== "number") return;
+        const dLeft = Math.abs(x0 - x) + Math.abs(mk.y0 - y) * 0.5;
+        const dRight = Math.abs(x1 - x) + Math.abs(mk.y1 - y) * 0.5;
+        d = Math.min(dLeft, dRight);
+        if (d < bestD) { best = { mark: mk, end: dLeft <= dRight ? "implied" : "fair" }; bestD = d; }
+        return;
+      } else {
+        if (typeof mk.x !== "number") return;
+        d = Math.abs(mk.x - x);
+      }
+      if (d < bestD) { best = { mark: mk, end: null }; bestD = d; }
+    });
+    return best;
+  }
+
+  /* What the hovered mark reads out, as text. The formatter is the series' own — the one the
+   * chart's labels print with — so the crosshair cannot disagree with the chart beside it. */
+  function hoverText(tab, hit) {
+    const c = tab.c, m = tab.m, mk = hit.mark;
+    const fmt = (v) => (ChartSpec.FMT[c.fmt] ? ChartSpec.FMT[c.fmt](v) : String(v));
+    /* WHICH SIDE, named as a reader names it. `c.meta.roles[0]` is the role side A is — "home",
+     * "away", "Over", "Under" — and for a game the page also holds the teams, so a role of "home"
+     * is said as the home team. The event row is [id, home, away], which is how the readout above
+     * prints "away @ home". */
+    const roles = (c.meta && c.meta.roles) || null;
+    const ev = (c.meta && c.meta.event) || null;
+    const role = Array.isArray(roles) && roles.length ? roles[0] : null;
+    const side = role === "home" && Array.isArray(ev) ? ev[1]
+      : role === "away" && Array.isArray(ev) ? ev[2] : role;
+    let value;
+    if (m.form === "scatter") value = fmt(mk.delta_pp !== undefined ? mk.delta_pp : mk.hold);
+    else if (m.form === "slope") value = fmt(hit.end === "implied" ? mk.implied : mk.fair);
+    else value = fmt(mk.value);
+    /* ORDER: the book, the number, and then WHAT THE NUMBER IS OF — the side — because that
+     * qualifies the number and a flag does not. Flags follow. A series that is not one-sided
+     * (`hold_strip`, `overround`) names no side, because it has none to name. */
+    const bits = [mk.book || "—", value];
+    if (side && c.family === "book" && c.key !== "hold_strip" && c.key !== "overround") bits.push(side);
+    if (m.form === "slope") bits.push(hit.end);
+    if (mk.value2 !== undefined && mk.value2 !== null) bits.push("to " + fmt(mk.value2));
+    if (mk.withheld) bits.push("withheld");
+    if (mk.clipped) bits.push("clipped");
+    if (mk.isRef) bits.push("reference");
+    return bits.join(" · ");
+  }
+
+  /* Which elements the hovered book owns. A CSS selector cannot read the root's attribute — there
+   * is no `attr()` in a selector — so the match is made here and marked, and the stylesheet only
+   * says what a marked element looks like. Every element the renderer labelled is considered, so a
+   * book drawn as several elements lights up whole. */
+  function paintHit(svg, book) {
+    const all = svg.querySelectorAll ? svg.querySelectorAll("[data-book]") : [];
+    for (let i = 0; i < all.length; i += 1) {
+      if (book !== null && all[i].getAttribute("data-book") === book) all[i].setAttribute("data-hit", "1");
+      else all[i].removeAttribute("data-hit");
+    }
+  }
+
+  function showHover(hit, tab) {
+    const svg = $("panel-svg");
+    if (!hoverCell) {
+      const cell = document.createElement("div");
+      cell.className = "cell hover";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = "under the pointer";
+      hoverCell = document.createElement("b");
+      hoverCell.id = "readout-hover";
+      cell.appendChild(label);
+      cell.appendChild(hoverCell);
+      $("readout").appendChild(cell);
+    }
+    if (!hit) {
+      hoverCell.textContent = "—";
+      svg.removeAttribute("data-hover");
+      paintHit(svg, null);
+      return;
+    }
+    hoverCell.textContent = hoverText(tab, hit);
+    if (hit.mark.book) svg.setAttribute("data-hover", hit.mark.book); else svg.removeAttribute("data-hover");
+    paintHit(svg, hit.mark.book || null);
+  }
+
+  function hoverAt(x, y) {
+    const tab = panel.active;                       /* read NOW: `draw` replaces `tab.m` on a resize */
+    if (!panel.open || !tab || tab.status !== "ready" || !tab.m) { showHover(null, null); return null; }
+    const hit = markAt(tab.m, x, y);
+    showHover(hit, tab);
+    return hit ? { book: hit.mark.book || null, end: hit.end, text: hoverCell.textContent } : null;
+  }
+
+  function bindCrosshair() {
+    const svg = $("panel-svg");
+    svg.addEventListener("pointermove", (ev) => {
+      if (ev.pointerType === "touch") return;
+      const r = svg.getBoundingClientRect();
+      hoverAt(ev.clientX - r.left, ev.clientY - r.top);
+    });
+    svg.addEventListener("pointerleave", () => { showHover(null, null); });
+  }
+
+  /* ---------- comparisons: RECOMPUTED HERE, never a figure the function handed over ----------
+   *
+   * D-3, option b. A statistics tool's result reaches this page as `{ tool, spec, ids }` and
+   * nothing else: the spec it ran on, and the snapshot rows it read. The page fetches those rows
+   * with its own key and redoes the arithmetic with the modules inlined above — the same bytes the
+   * function ran — exactly as a chart is redrawn from its spec. A number on this screen is a number
+   * this page computed.
+   *
+   * THE ARITHMETIC IS MIRRORED IN ORDER, NOT JUST IN VALUE. `stat_prims.js` rounds each side to
+   * four decimals and then subtracts, so `r4(r4(a * scale) - r4(b * scale))` is the expression, not
+   * `r4((a - b) * scale)`: the two differ in the last place and the parity test compares them
+   * exactly. `test_terminal_page.py` runs `stat_board.js` itself over the same rows and asserts
+   * this page's figures equal the function's, book for book — so a change to either side goes red
+   * rather than quietly disagreeing on a screen.
+   *
+   * WHAT IS NOT RECOMPUTED: the refusals. A tool that refused sends no block, and its reason is the
+   * status line's, as before. The three comparability rules below (B4, an unusable quote, B6) are
+   * applied here because a delta for a bet that is not the same bet must not be drawn at all; they
+   * are field comparisons, not arithmetic, and the parity test covers which books they withhold. */
+  const r4 = (v) => (typeof v === "number" && isFinite(v) ? Math.round(v * 1e4) / 1e4 : null);
+  const diff = (name, unit, va, vb, scale) => {
+    const a = r4(va * scale), b = r4(vb * scale);
+    return { name: name, unit: unit, a: a, b: b, value: r4(a - b) };
+  };
+  const COMPARE = {
+    board_compare_books: (spec, rows) => {
+      const row = rows.filter((r) => r.region === spec.region)[0];
+      const board = row ? ChartSpec.panel(row, spec.event, spec.market) : null;
+      const a = board ? ChartSpec.quoteFor(board, spec.book_a) : null;
+      const b = board ? ChartSpec.quoteFor(board, spec.book_b) : null;
+      if (!a || !b || a.fair === null || b.fair === null) return null;
+      return {
+        head: spec.book_a + " minus " + spec.book_b,
+        quantities: [
+          diff("fair side A", "pp", a.fair[0], b.fair[0], 100.0),
+          diff("hold", "pp", a.hold, b.hold, 100.0),
+          diff("price side A", "decimal", a.prices[0], b.prices[0], 1.0),
+          diff("price side B", "decimal", a.prices[1], b.prices[1], 1.0)
+        ],
+        points: []
+      };
+    },
+    board_compare_regions: (spec, rows) => {
+      const refRegion = spec.reference_region || "eu";
+      const ref = rows.filter((r) => r.region === refRegion)[0];
+      const mea = rows.filter((r) => r.region === spec.region)[0];
+      const rb = ref ? ChartSpec.panel(ref, spec.event, spec.market) : null;
+      const mb = mea ? ChartSpec.panel(mea, spec.event, spec.market) : null;
+      if (!rb || !mb || !rb.reference) return null;
+      const anchor = rb.reference;
+      const points = ChartSpec.everyQuote(mb).map((q) => {
+        const withheld = q.isExchange ? "an exchange, never compared (B4)"
+          : q.fair === null ? "no usable quote here"
+          : q.line !== anchor.line ? "line " + String(q.line) + ", the reference quotes " + String(anchor.line) + " (B6)"
+          : null;
+        return { book: q.book, unit: "pp", withheld: withheld,
+                 value: withheld ? null : r4(BoardQuote.deltaPp(q.fair[0], anchor.fair[0])) };
+      });
+      return { head: spec.region + " minus " + anchor.book + " (" + refRegion + ")", quantities: [], points: points };
+    }
+  };
+
+  /* The rendered block. Built from a computed result, so a caller that computed nothing renders
+   * nothing — there is no path here that prints a figure without having produced it. */
+  function compareBlock(out) {
+    const box = document.createElement("div");
+    box.className = "compare";
+    box.setAttribute("data-compare", "1");
+    const head = document.createElement("div");
+    head.className = "compare-head";
+    head.textContent = out.head;
+    box.appendChild(head);
+    const line = (label, value, unit, withheld) => {
+      const r = document.createElement("div");
+      r.className = "compare-row" + (withheld ? " withheld" : "");
+      const k = document.createElement("span");
+      k.className = "compare-k";
+      k.textContent = label;
+      const v = document.createElement("span");
+      v.className = "compare-v";
+      v.textContent = withheld ? withheld
+        : (value === null ? "—" : (value > 0 ? "+" : "") + value.toFixed(unit === "pp" ? 2 : 3) + (unit === "pp" ? " pp" : ""));
+      r.appendChild(k);
+      r.appendChild(v);
+      box.appendChild(r);
+    };
+    out.quantities.forEach((q) => line(q.name, q.value, q.unit, null));
+    out.points.forEach((p) => line(p.book, p.value, p.unit, p.withheld));
+    return box;
+  }
+
+  /* Fetch the rows the tool read, recompute, and put the block in the message. Unknown tools and
+   * absent blocks are ignored, which is what the page did with every unread field before this. */
+  function renderCompare(parent, rc) {
+    if (!parent || !rc || !COMPARE[rc.tool] || !Array.isArray(rc.ids) || !rc.ids.length) return Promise.resolve(null);
+    return fetchRows(rc.ids).then((rows) => {
+      const out = COMPARE[rc.tool](rc.spec || {}, rows || []);
+      if (!out) return null;
+      const box = compareBlock(out);
+      parent.appendChild(box);
+      return box;
+    }, () => null);
+  }
+
   /* ---------- messages ---------- */
   function addMessage(role, text, at) {
     const el = document.createElement("div");
@@ -3096,7 +3399,13 @@ var ChartForms = (function () {
       thread: (d) => { if (d.created || !currentThread) currentThread = d.id; },
       status: (d) => setStatus(d.tool ? "calling " + d.tool : (d.note || d.board || "")),
       tool_call: (d) => setStatus(d.name + (d.input && d.input.series ? " " + d.input.series : "")),
-      tool_result: (d) => setStatus(d.name + (d.ok ? " ok" : " refused: " + (d.error || "")), !d.ok),
+      tool_result: (d) => {
+        setStatus(d.name + (d.ok ? " ok" : " refused: " + (d.error || "")), !d.ok);
+        /* A comparison the page can redo goes into the answer, where it stays; the status line is
+         * transient and the next tool overwrites it. Nothing is drawn from `d`'s own figures —
+         * `renderCompare` fetches the rows and computes. */
+        if (d.recompute) renderCompare(answerBody.parentNode, d.recompute);
+      },
       chart: (d) => {
         if (epoch !== panel.epoch) return;
         /* ADD, never replace: a new tab, and the active one. Its message id arrives with `done`.
@@ -3173,6 +3482,7 @@ var ChartForms = (function () {
   }
 
   function bind() {
+    bindCrosshair();
     $("signout").addEventListener("click", () => { signOut(); });
     $("new-thread").addEventListener("click", newThread);
     $("composer").addEventListener("submit", (e) => {
@@ -3275,7 +3585,29 @@ var ChartForms = (function () {
         return panelState();
       },
       label: function (spec, capturedAt) { return tabLabel(spec, capturedAt); },
+      /* The crosshair, driven at a position in the chart's own user units. It reads the ACTIVE
+       * tab's current model, which is the property a test has to be able to break. */
+      hover: function (x, y) { return hoverAt(x, y); },
+      /* The active tab's marks, as the positions a pointer can be at. The page holds these anyway;
+       * a test addresses a mark by where it IS rather than by a number copied into the test. */
+      marks: function () {
+        const tab = panel.active;
+        if (!tab || !tab.m || !Array.isArray(tab.m.marks)) return null;
+        return { form: tab.m.form, width: tab.m.width, height: tab.m.height,
+                 plot: plotBox(tab.m),
+                 marks: tab.m.marks.map((mk) => ({ book: mk.book || null, x: mk.x === undefined ? null : mk.x,
+                   py: mk.py === undefined ? null : mk.py,
+                   cx: mk.cx === undefined ? null : mk.cx, cy: mk.cy === undefined ? null : mk.cy,
+                   y0: mk.y0 === undefined ? null : mk.y0, y1: mk.y1 === undefined ? null : mk.y1 })) };
+      },
       state: panelState
+    },
+    /* The page's OWN recomputation, exposed so a test can run it against `stat_board.js` over the
+     * same rows. It takes rows rather than fetching them, so the comparison under test is the
+     * arithmetic and not the reader. */
+    compare: {
+      tools: function () { return Object.keys(COMPARE); },
+      run: function (tool, spec, rows) { return COMPARE[tool] ? COMPARE[tool](spec, rows) : null; }
     }
   };
 
