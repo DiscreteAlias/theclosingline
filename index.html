@@ -2471,6 +2471,8 @@ var ChartForms = (function () {
 
   const $ = (id) => document.getElementById(id);
   const FUNCTION_URL = SUPABASE_URL + "/functions/v1/" + FUNCTION_NAME;
+  const AGENT_SESSION_URL = SUPABASE_URL + "/functions/v1/agent-session";
+  const TERMINAL_AUTH_MODE = "agent-session";
   const LOGOUT_WAIT_MS = 2000;
 
   /* ---------- session: the one the sign-in page stored, through session.js ---------- */
@@ -2492,6 +2494,16 @@ var ChartForms = (function () {
   async function refreshIfNeeded() {
     if (!session) return false;
     if (TclSession.remaining(session) > 60) return true;
+    /* Another page on this origin may already have refreshed this session — the Investigation page
+     * frames this one, and both hold it. GoTrue rotates refresh tokens: spending the one this page
+     * still holds after the other page spent it is a reuse, refused, and the refusal signs out BOTH.
+     * So a fresher stored session for the same reader is adopted, and nothing is spent. */
+    const stored = TclSession.load();
+    if (stored && stored.access_token !== session.access_token && stored.user && session.user &&
+        stored.user.id === session.user.id && TclSession.remaining(stored) > 60) {
+      session = stored;
+      return true;
+    }
     let next;
     try {
       next = await TclSession.refresh(session);
@@ -2531,6 +2543,29 @@ var ChartForms = (function () {
         if (!r.ok) throw new Error("HTTP " + r.status + " on " + path.split("?")[0]);
         return r.json();
       });
+  }
+
+  /* The JWT stays on the model-free exchange path. The model-running terminal sees only
+   * the signed, terminal-audience capability. Legacy mode preserves the old page render
+   * until the gateway, verifier, and page can be released together. */
+  async function terminalAuthorization() {
+    if (TERMINAL_AUTH_MODE === "jwt") return session.access_token;
+    if (TERMINAL_AUTH_MODE !== "agent-session") throw new Error("unknown terminal auth mode");
+    const response = await fetch(AGENT_SESSION_URL, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + session.access_token,
+                 "Accept": "application/json" }
+    });
+    if (!response.ok) throw new Error("terminal authorization failed (HTTP " + response.status + ")");
+    const capability = await response.json();
+    /* Shape only. Expiry is the terminal's to judge on the server clock: a check against this
+     * browser's clock would refuse every turn on a machine running five minutes fast. */
+    if (!capability || typeof capability.token !== "string" ||
+        !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(capability.token) ||
+        !Number.isSafeInteger(capability.expires_at)) {
+      throw new Error("invalid terminal capability");
+    }
+    return capability.token;
   }
 
   function loadThreads() {
@@ -3436,9 +3471,10 @@ var ChartForms = (function () {
       }
     };
     try {
+      const terminalToken = await terminalAuthorization();
       const resp = await fetch(FUNCTION_URL, {
         method: "POST",
-        headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + session.access_token,
+        headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + terminalToken,
                    "Content-Type": "application/json", "Accept": "text/event-stream" },
         body: JSON.stringify({ thread_id: currentThread, message: text })
       });
