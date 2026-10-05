@@ -10,8 +10,8 @@ const SUPABASE_URL = "https://eddbffgqmqwebpcsaewj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_8Rp9NOSJPyKToxHQqFm4dQ_AlRRN81g";
 const SIGNIN_URL = "/signin.html";
 const INVESTIGATIONS_FLAG = "on";
-const MODEL_VERSIONS_FLAG = "off";
-const RUNS_FLAG = "off";
+const MODEL_VERSIONS_FLAG = "on";
+const RUNS_FLAG = "on";
 </script>
 <script>/* The beta terminal's session: where it is kept, what counts as one, and the calls that move it.
  *
@@ -223,6 +223,7 @@ h1 { margin: 12px 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-h
 .message.user { background: var(--surface); }
 .message .body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 7px; }
 .message .failure { color: var(--bad); }
+.run-line { color: var(--muted); font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .explore { margin-top: 36px; border-top: 1px solid var(--rule); padding-top: 24px; }
 .explore-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .explore-head h2 { font-size: 18px; font-weight: 500; margin: 0 6px 0 0; }
@@ -265,6 +266,9 @@ select.field { width: 100%; color: var(--primary); background: var(--surface); b
 .run-status.not_evaluated { color: var(--margin); }
 .run-status.lost { color: var(--muted); border-style: dashed; }
 .run-status-text { color: var(--primary); margin: 4px 0 14px; max-width: 720px; }
+.run-score { margin: 0 0 14px; max-width: 720px; }
+.run-score p, .run-score-unreadable { margin: 6px 0; }
+.run-score .run-score-disclosure { color: var(--primary); font-size: 13px; }
 form.create { display: grid; gap: 14px; max-width: 580px; margin-top: 24px; }
 form.create label { color: var(--muted); }
 form.create input { width: 100%; color: var(--primary); background: var(--surface); border: 1px solid var(--rule);
@@ -372,7 +376,7 @@ form.create input:focus { border-color: var(--accent); }
           <div class="actions"><button id="version-submit" class="primary" type="submit" data-testid="model-version-save">Save model version</button>
             <button class="quiet" id="version-cancel" type="button">Cancel</button></div>
         </form>
-        <p class="disclaimer">A saved version belongs to you. Opening an Investigation does not select it, and saving runs
+        <p class="disclaimer" id="version-form-note">A saved version belongs to you. Opening an Investigation does not select it, and saving runs
           nothing: no served run is available. The store checks the bytes again and may refuse them.</p>
       </section>
       <section id="version-view" data-testid="model-version-detail" hidden>
@@ -380,7 +384,7 @@ form.create input:focus { border-color: var(--accent); }
           <div class="fact"><small>Saved</small><span id="version-created"></span></div>
           <div class="fact"><small>Schema</small><span id="version-schema"></span></div>
           <div class="fact"><small>Investigation</small><span>Not attached</span></div>
-          <div class="fact"><small>Served run</small><span>None available</span></div>
+          <div class="fact" id="version-served"><small>Served run</small><span>None available</span></div>
         </div>
         <h2>Parameters</h2>
         <dl class="params" data-testid="model-version-params">
@@ -393,7 +397,7 @@ form.create input:focus { border-color: var(--accent); }
         <p class="label">Content hash, sha256, computed by the store</p>
         <code id="version-hash" class="hash" data-testid="model-version-hash"></code>
         <p id="version-hash-check" class="disclaimer" data-testid="model-version-hash-check"></p>
-        <div class="callout" data-testid="model-version-standing"><strong>This version belongs to you.</strong> It is not attached
+        <div class="callout" id="version-standing" data-testid="model-version-standing"><strong>This version belongs to you.</strong> It is not attached
           to an Investigation, opening an Investigation does not select it, and no served run of it is available.</div>
       </section>
       <section id="detail-view" data-testid="investigation-detail" hidden>
@@ -444,8 +448,8 @@ form.create input:focus { border-color: var(--accent); }
         <div class="pane" id="pane-runs" data-testid="investigation-runs" hidden><h2>Runs</h2>
           <div id="runs-panel" hidden>
             <p>A run evaluates one of your saved Model Versions on the Journey 0 fixture, in a referenced conversation whose
-              context you selected as this Investigation. This page shows only the run's coarse state: no scores, hashes or
-              internal detail.</p>
+              context you selected as this Investigation. This page shows the run's coarse state. A completed run also shows its
+              score, always with its evidence class; no hashes or internal detail are shown.</p>
             <form id="run-form" class="create">
               <label for="run-thread">Conversation</label>
               <select id="run-thread" class="field" data-testid="run-thread"></select>
@@ -461,6 +465,17 @@ form.create input:focus { border-color: var(--accent); }
               <p class="label">Run</p>
               <span id="run-status" class="run-status" data-testid="run-status"></span>
               <p id="run-status-text" class="run-status-text" data-testid="run-status-text"></p>
+              <div id="run-score" class="run-score" data-testid="run-score" hidden>
+                <span id="run-score-class" class="tag" data-testid="run-score-class"></span>
+                <p id="run-score-disclosure" class="run-score-disclosure" data-testid="run-score-disclosure"></p>
+                <p id="run-score-name" data-testid="run-score-name"></p>
+                <p id="run-score-candidate" data-testid="run-score-candidate"></p>
+                <p id="run-score-baseline" data-testid="run-score-baseline"></p>
+                <p id="run-score-difference" data-testid="run-score-difference"></p>
+                <p id="run-score-direction" data-testid="run-score-direction"></p>
+                <p id="run-score-counts" data-testid="run-score-counts"></p>
+              </div>
+              <p id="run-score-unreadable" class="run-score-unreadable" data-testid="run-score-unreadable" hidden></p>
               <dl class="params">
                 <dt>Run</dt><dd id="run-ref-read"></dd>
                 <dt>Model Version</dt><dd id="run-version-read"></dd>
@@ -541,16 +556,49 @@ form.create input:focus { border-color: var(--accent); }
   /* The user run path (017 selection and start, 018 coarse outcome). Off until the run backend is
      served. A run needs a saved version, so it rides on Model Versions. */
   const runsEnabled = versionsEnabled && RUNS_FLAG === "on";
+  /* With runs on, the four "no served run is available" texts would contradict the Runs tab; these replace them. */
+  const RUNS_COPY = Object.freeze({
+    form: "A saved version belongs to you. Opening an Investigation does not select it, and saving runs nothing. A run can be started from an Investigation's Runs tab; a provisional run supports no decision. The store checks the bytes again and may refuse them.",
+    fact: "Start from the Runs tab",
+    standing: " It is not attached to an Investigation, and opening an Investigation does not select it. A run can be started from an Investigation's Runs tab; a provisional run supports no decision.",
+    pane: "Your saved Model Versions belong to you and are listed under Your model versions. Opening this Investigation selects none of them. A run can be started from the Runs tab.",
+    saved: "Model Version saved. It belongs to you; opening an Investigation does not select it. A run can be started from an Investigation's Runs tab."
+  });
+  if (runsEnabled) {
+    $("version-form-note").textContent = RUNS_COPY.form;
+    const servedLabel = document.createElement("small");
+    servedLabel.textContent = "Served run";
+    const servedText = document.createElement("span");
+    servedText.textContent = RUNS_COPY.fact;
+    $("version-served").replaceChildren(servedLabel, servedText);
+    const standingLead = document.createElement("strong");
+    standingLead.textContent = "This version belongs to you.";
+    $("version-standing").replaceChildren(standingLead, RUNS_COPY.standing);
+    $("model-pane-versions").textContent = RUNS_COPY.pane;
+  }
   const RUN_FIXTURE_ID = "journey0-synthetic";
   const RUN_FIXTURE_VERSION = 2;
   const RUN_STATUSES = ["pending", "completed", "refused", "not_evaluated", "lost"];
-  /* What the page says about each coarse state. No score, hash, reason or internal code is shown. */
+  /* What the page says about each coarse state. A score is shown only for a completed run, by readScore below;
+     no hash, reason or internal code is shown. */
   const RUN_STATUS_TEXT = Object.freeze({
     pending: ["Pending", "The run has started. Its result is not recorded yet; this page checks again."],
-    completed: ["Completed", "The evaluation finished and its outcome is recorded. No score is shown here, and a provisional run supports no decision."],
+    completed: ["Completed", "The evaluation finished and its outcome is recorded. A provisional run supports no decision."],
     refused: ["Refused", "The evaluation was refused, so nothing was compared. The reason is not shown here."],
     not_evaluated: ["Not evaluated", "The run stopped before a comparison was completed, so nothing was compared."],
     lost: ["Lost", "No outcome was recorded before the run's deadline, so nothing was compared."]
+  });
+  const SCORE_KEYS = ["baseline_mean", "candidate_mean", "difference_hi", "difference_lo", "difference_mean", "direction",
+    "disclosure", "evidence_class", "n_events", "n_rows", "name"];
+  const SCORE_CLASSES = Object.freeze({ synthetic_backtest: "Synthetic backtest", historical_backtest: "Historical backtest" });
+  const SCORE_NAMES = Object.freeze({
+    log: "Mean log score on the final test rows. Lower is better.",
+    brier: "Mean Brier score on the final test rows. Lower is better."
+  });
+  const SCORE_DIRECTIONS = Object.freeze({
+    candidate_lower: "Your model scored lower (better) and the interval excludes zero.",
+    baseline_lower: "The baseline scored lower (better) and the interval excludes zero.",
+    interval_spans_zero: "The interval includes zero, so these rows do not separate them."
   });
   const START_REFUSALS = Object.freeze({
     stale_selection: "This conversation's context changed since this page showed it. The selection now in force is shown; start again if it is the one you want.",
@@ -839,7 +887,7 @@ form.create input:focus { border-color: var(--accent); }
     renderReferences();
     $("history").textContent = "Loading referenced conversation…";
     try {
-      const rows = await publicGet("messages?select=id,role,content,charts,trace,created_at&thread_id=eq."
+      const rows = await publicGet("messages?select=*&thread_id=eq."
         + threadId + "&order=id.asc", "Conversation history");
       if (epoch !== historyEpoch || current?.id !== investigationId) return false;
       if (!Array.isArray(rows)) throw new Error("Conversation history has an unexpected shape");
@@ -848,6 +896,18 @@ form.create input:focus { border-color: var(--accent); }
       rows.forEach((row) => {
         if (!row || (row.role !== "user" && row.role !== "assistant") ||
             typeof row.content !== "string") throw new Error("Message has an unexpected shape");
+        if (row.kind === "command") {
+          const line = document.createElement("div");
+          line.className = "run-line";
+          const tag = document.createElement("span");
+          tag.className = "label";
+          tag.textContent = "Run";
+          const text = document.createElement("span");
+          text.textContent = row.content;
+          line.append(tag, " ", text);
+          history.appendChild(line);
+          return;
+        }
         const card = document.createElement("article");
         card.className = "message " + row.role;
         const meta = document.createElement("span");
@@ -1308,7 +1368,7 @@ form.create input:focus { border-color: var(--accent); }
       pendingSave = null;
       if (epoch !== requestEpoch) { renderVersionList(); return; }
       setVersionUrl(saved.version_id);
-      status("Model Version saved. It belongs to you; opening an Investigation does not select it, and no served run is available.", false);
+      status(runsEnabled ? RUNS_COPY.saved : "Model Version saved. It belongs to you; opening an Investigation does not select it, and no served run is available.", false);
       await renderVersion(saved);
     } catch (cause) {
       if (cause.kind === "auth") { report(cause); return; }
@@ -1572,8 +1632,51 @@ form.create input:focus { border-color: var(--accent); }
     runEpoch += 1;
     if (runTimer !== null) { clearTimeout(runTimer); runTimer = null; }
   }
-  /* Only the coarse state is drawn: status, the run's short reference, its version, fixture, kind and
-     deadline. No evaluation id, outcome kind, refusal source, stage, producer state or hash. */
+  /* The score of a completed run, or null. The block is drawn only if the object has exactly the eleven keys, a known
+     class, a non-empty disclosure, a known score name and direction, finite numbers and whole-number counts. */
+  function readScore(score) {
+    if (score === null || typeof score !== "object" || Array.isArray(score)) return null;
+    const keys = Object.keys(score);
+    if (keys.length !== SCORE_KEYS.length || !SCORE_KEYS.every((key) => Object.prototype.hasOwnProperty.call(score, key))) return null;
+    const own = (table, key) => typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key);
+    if (!own(SCORE_CLASSES, score.evidence_class) || !own(SCORE_NAMES, score.name) || !own(SCORE_DIRECTIONS, score.direction)) return null;
+    if (typeof score.disclosure !== "string" || score.disclosure.trim() === "") return null;
+    const finite = (value) => typeof value === "number" && Number.isFinite(value);
+    const count = (value) => Number.isInteger(value) && value >= 0;
+    if (![score.candidate_mean, score.baseline_mean, score.difference_mean, score.difference_lo, score.difference_hi].every(finite)) return null;
+    if (!count(score.n_rows) || !count(score.n_events)) return null;
+    return score;
+  }
+  function hideScore() {
+    $("run-score").hidden = true;
+    $("run-score-unreadable").hidden = true;
+  }
+  /* Never a number without its class and disclosure: both are set in the same block, and an unreadable score
+     draws no number at all. Every value is set with textContent. */
+  function renderScore(row) {
+    hideScore();
+    if (row.status !== "completed") return;
+    const score = readScore(row.score);
+    if (!score) {
+      $("run-score-unreadable").textContent = "Completed. The score could not be read, so none is shown.";
+      $("run-score-unreadable").hidden = false;
+      return;
+    }
+    const four = (value) => value.toFixed(4);
+    $("run-score-class").textContent = SCORE_CLASSES[score.evidence_class];
+    $("run-score-disclosure").textContent = score.disclosure;
+    $("run-score-name").textContent = SCORE_NAMES[score.name];
+    $("run-score-candidate").textContent = "Your model: " + four(score.candidate_mean);
+    $("run-score-baseline").textContent = "Market-only baseline: " + four(score.baseline_mean);
+    $("run-score-difference").textContent = "Difference (yours minus baseline): " + four(score.difference_mean) +
+      ", interval " + four(score.difference_lo) + " to " + four(score.difference_hi) +
+      " (mean plus or minus 1.96 standard errors, clustered by event)";
+    $("run-score-direction").textContent = SCORE_DIRECTIONS[score.direction];
+    $("run-score-counts").textContent = "Computed on " + score.n_rows + " rows from " + score.n_events + " events.";
+    $("run-score").hidden = false;
+  }
+  /* Status, the run's short reference, its version, fixture, kind and deadline, plus the score of a completed
+     run. No evaluation id, outcome kind, refusal source, stage, producer state or hash. */
   function renderRun(row) {
     const [label, text] = RUN_STATUS_TEXT[row.status];
     const known = pageRuns.find((item) => item.run_ref === row.run_ref);
@@ -1591,6 +1694,7 @@ form.create input:focus { border-color: var(--accent); }
     $("run-deadline-read").textContent = row.status === "pending" || row.status === "lost"
       ? stamp(row.deadline_at, 16) + " UTC" : "—";
     $("run-refresh").hidden = row.status !== "pending";
+    renderScore(row);
   }
   async function openRun(runRef) {
     if (!runsEnabled || !current) return;
@@ -1603,6 +1707,7 @@ form.create input:focus { border-color: var(--accent); }
     $("run-status").className = "run-status";
     $("run-status").textContent = "Reading";
     $("run-status-text").textContent = "Reading the run's state…";
+    hideScore();
     try {
       const row = await runApi.record(runRef);
       if (epoch !== runEpoch || current?.id !== investigationId) return;
