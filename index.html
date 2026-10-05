@@ -11,6 +11,7 @@ const SUPABASE_KEY = "sb_publishable_8Rp9NOSJPyKToxHQqFm4dQ_AlRRN81g";
 const SIGNIN_URL = "/signin.html";
 const INVESTIGATIONS_FLAG = "on";
 const MODEL_VERSIONS_FLAG = "off";
+const RUNS_FLAG = "off";
 </script>
 <script>/* The beta terminal's session: where it is kept, what counts as one, and the calls that move it.
  *
@@ -251,6 +252,19 @@ h1 { margin: 12px 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-h
 select.field { width: 100%; color: var(--primary); background: var(--surface); border: 1px solid var(--rule);
                border-radius: 4px; padding: 11px 12px; font: inherit; }
 .problems { color: var(--bad); margin: 0; }
+.select-context { border: 1px solid var(--rule); background: transparent; color: var(--accent); border-radius: 4px;
+                  padding: 3px 9px; font-size: 12px; }
+.select-context:hover { border-color: var(--accent); }
+.run-detail { margin: 26px 0 8px; padding: 18px 20px; border: 1px solid var(--rule); border-radius: 5px;
+              background: var(--panel); max-width: 840px; }
+.run-status { display: inline-block; margin: 8px 0 6px; padding: 3px 11px; border-radius: 999px; font-size: 12px;
+              letter-spacing: .1em; text-transform: uppercase; border: 1px solid currentColor; }
+.run-status.pending { color: var(--accent); }
+.run-status.completed { color: #4ade80; }
+.run-status.refused { color: var(--bad); }
+.run-status.not_evaluated { color: var(--margin); }
+.run-status.lost { color: var(--muted); border-style: dashed; }
+.run-status-text { color: var(--primary); margin: 4px 0 14px; max-width: 720px; }
 form.create { display: grid; gap: 14px; max-width: 580px; margin-top: 24px; }
 form.create label { color: var(--muted); }
 form.create input { width: 100%; color: var(--primary); background: var(--surface); border: 1px solid var(--rule);
@@ -386,7 +400,7 @@ form.create input:focus { border-color: var(--accent); }
         <div class="summary">
           <div class="fact"><small>Created</small><span id="created-at"></span></div>
           <div class="fact"><small>Referenced conversations</small><span id="reference-count" data-testid="investigation-reference-count"></span></div>
-          <div class="fact"><small>Conversation context</small><span>Not selected</span></div>
+          <div class="fact"><small>Conversation context</small><span id="context-fact" data-testid="investigation-context">Not selected</span></div>
           <div class="fact"><small>Standing</small><span>Exploratory</span></div>
         </div>
         <nav class="tabs" aria-label="Investigation sections" id="tabs">
@@ -394,6 +408,7 @@ form.create input:focus { border-color: var(--accent); }
           <button type="button" data-tab="conversation" aria-selected="false">Conversation</button>
           <button type="button" data-tab="data" aria-selected="false">Data</button>
           <button type="button" id="tab-model" data-tab="model" aria-selected="false" hidden>Model</button>
+          <button type="button" id="tab-runs" data-tab="runs" aria-selected="false" hidden>Runs</button>
         </nav>
         <div class="pane" id="pane-overview">
           <h2>Research starts with a question</h2>
@@ -426,6 +441,40 @@ form.create input:focus { border-color: var(--accent); }
         <div class="pane" id="pane-model" hidden><h2>Model</h2><p>No Model Version is attached to this Investigation.</p>
           <p id="model-pane-versions" hidden>Your saved Model Versions belong to you and are listed under Your model versions.
             Opening this Investigation selects none of them, and no served run is available.</p></div>
+        <div class="pane" id="pane-runs" data-testid="investigation-runs" hidden><h2>Runs</h2>
+          <div id="runs-panel" hidden>
+            <p>A run evaluates one of your saved Model Versions on the Journey 0 fixture, in a referenced conversation whose
+              context you selected as this Investigation. This page shows only the run's coarse state: no scores, hashes or
+              internal detail.</p>
+            <form id="run-form" class="create">
+              <label for="run-thread">Conversation</label>
+              <select id="run-thread" class="field" data-testid="run-thread"></select>
+              <p class="disclaimer" id="run-thread-note" data-testid="run-thread-note"></p>
+              <label for="run-version">Model Version</label>
+              <select id="run-version" class="field" data-testid="run-version"></select>
+              <p class="disclaimer" id="run-version-note"></p>
+              <p class="disclaimer">Fixture: <span id="run-fixture" data-testid="run-fixture"></span></p>
+              <div class="actions"><button id="run-submit" class="primary" type="submit" data-testid="run-start">Start run</button></div>
+              <p class="disclaimer" id="run-submit-note" data-testid="run-submit-note"></p>
+            </form>
+            <section id="run-detail" class="run-detail" data-testid="run-detail" hidden>
+              <p class="label">Run</p>
+              <span id="run-status" class="run-status" data-testid="run-status"></span>
+              <p id="run-status-text" class="run-status-text" data-testid="run-status-text"></p>
+              <dl class="params">
+                <dt>Run</dt><dd id="run-ref-read"></dd>
+                <dt>Model Version</dt><dd id="run-version-read"></dd>
+                <dt>Fixture</dt><dd id="run-fixture-read"></dd>
+                <dt>Kind</dt><dd id="run-kind-read"></dd>
+                <dt>Result due by</dt><dd id="run-deadline-read"></dd>
+              </dl>
+              <div class="actions"><button class="quiet" id="run-refresh" type="button" data-testid="run-refresh">Check again</button></div>
+            </section>
+            <h2>Runs on this page</h2>
+            <ul id="run-list" class="references" data-testid="run-list"></ul>
+            <p class="disclaimer" id="run-list-note" data-testid="run-list-note"></p>
+          </div>
+        </div>
         <section class="explore" id="explore" data-testid="investigation-terminal" hidden>
           <div class="explore-head">
             <h2>Terminal</h2><span class="tag">Exploratory</span><span class="tag">Not bound to this Investigation</span>
@@ -489,9 +538,43 @@ form.create input:focus { border-color: var(--accent); }
   /* Bound to the exact bytes: a retry of the same bytes repeats the act; new bytes are a new act,
      because the store refuses a key reused for other bytes as idempotency_conflict. */
   let pendingSave = null;
+  /* The user run path (017 selection and start, 018 coarse outcome). Off until the run backend is
+     served. A run needs a saved version, so it rides on Model Versions. */
+  const runsEnabled = versionsEnabled && RUNS_FLAG === "on";
+  const RUN_FIXTURE_ID = "journey0-synthetic";
+  const RUN_FIXTURE_VERSION = 2;
+  const RUN_STATUSES = ["pending", "completed", "refused", "not_evaluated", "lost"];
+  /* What the page says about each coarse state. No score, hash, reason or internal code is shown. */
+  const RUN_STATUS_TEXT = Object.freeze({
+    pending: ["Pending", "The run has started. Its result is not recorded yet; this page checks again."],
+    completed: ["Completed", "The evaluation finished and its outcome is recorded. No score is shown here, and a provisional run supports no decision."],
+    refused: ["Refused", "The evaluation was refused, so nothing was compared. The reason is not shown here."],
+    not_evaluated: ["Not evaluated", "The run stopped before a comparison was completed, so nothing was compared."],
+    lost: ["Lost", "No outcome was recorded before the run's deadline, so nothing was compared."]
+  });
+  const START_REFUSALS = Object.freeze({
+    stale_selection: "This conversation's context changed since this page showed it. The selection now in force is shown; start again if it is the one you want.",
+    selection_required: "Select this Investigation as the conversation's context first, under Conversation.",
+    target_not_selected: "This conversation's context is not this Investigation. Select it first, under Conversation.",
+    target_unavailable: "That conversation, Investigation or Model Version is not available to this account.",
+    idempotency_conflict: "This start conflicted with an earlier request, so nothing was started. Try again."
+  });
+  const SELECT_REFUSALS = Object.freeze({
+    target_unavailable: "That conversation reference is not available to this account. Nothing was selected.",
+    idempotency_conflict: "This selection conflicted with an earlier request, so nothing was selected. Try again."
+  });
+  let selections = new Map();
+  let selectionsReady = false;
+  const pendingSelects = new Map();
+  /* One key per click on Start: a retry of that click resends it, so a lost answer cannot start twice. */
+  let pendingStart = null;
+  let pageRuns = [];
+  let currentRun = null;
+  let runEpoch = 0;
+  let runTimer = null;
   /* A tab is shown only for a feature this release serves: nothing unshipped reads as shipped on
-     the front door. Model appears with the saved Model Versions it describes. */
-  const TABS = ["overview", "conversation", "data"].concat(versionsEnabled ? ["model"] : []);
+     the front door. Model appears with the saved Model Versions it describes, Runs with the run path. */
+  const TABS = ["overview", "conversation", "data"].concat(versionsEnabled ? ["model"] : [], runsEnabled ? ["runs"] : []);
   const TERMINAL_TABS = ["conversation", "data"];
   const REFERENCE_STATUS = { referenced_only: "Referenced only" };
 
@@ -516,6 +599,8 @@ form.create input:focus { border-color: var(--accent); }
     $("version-submit").disabled = busy || draftProblems(parseFeatures($("version-features").value),
                                                          $("version-l2").value).length > 0;
     $("version-cancel").disabled = busy;
+    $("run-submit").disabled = busy || !runsEnabled || !$("run-thread").value || !$("run-version").value;
+    $("run-refresh").disabled = busy;
   }
   function setBusy(value) { busy = value; syncControls(); }
   function titleOf(record) { return record.title.trim() || "Untitled investigation"; }
@@ -707,16 +792,26 @@ form.create input:focus { border-color: var(--accent); }
       const state = document.createElement("span");
       state.className = "reference-state";
       state.dataset.testid = "investigation-reference-state";
-      state.textContent = REFERENCE_STATUS[reference.status] +
-        (reference.selection_act_id === null ? " · not selected as context" : "");
+      state.textContent = referenceStateText(reference);
       const when = document.createElement("span");
       when.className = "reference-when";
       when.textContent = "referenced " + stamp(reference.created_at, 16) + " UTC";
       li.append(button, state, when);
+      if (runsEnabled && selectionsReady && !selectedHere(reference)) {
+        const select = document.createElement("button");
+        select.type = "button";
+        select.className = "select-context";
+        select.dataset.testid = "investigation-select-context";
+        select.dataset.threadId = reference.thread_id;
+        select.textContent = "Select as context";
+        select.addEventListener("click", () => selectContext(reference));
+        li.append(select);
+      }
       ul.appendChild(li);
     });
-    $("reference-count").textContent = references.length
-      ? references.length + " · referenced only" : "None";
+    $("reference-count").textContent = !references.length ? "None"
+      : runsEnabled ? String(references.length) : references.length + " · referenced only";
+    renderContextFact();
     $("thread-note").textContent = references.length
       ? "Choose a reference to read its saved history. Reading is not a work-within selection."
       : "No referenced conversations yet.";
@@ -788,6 +883,8 @@ form.create input:focus { border-color: var(--accent); }
     }
     if (current?.id !== id || (epoch !== undefined && epoch !== requestEpoch)) return;
     if (writes !== referenceWrites) return;
+    if (runsEnabled) await loadSelections(refs, id, epoch);
+    if (current?.id !== id || (epoch !== undefined && epoch !== requestEpoch) || writes !== referenceWrites) return;
     references = refs;
     referencesReady = true;
     viewedThreadId = null;
@@ -805,6 +902,7 @@ form.create input:focus { border-color: var(--accent); }
     if (id) url.searchParams.set("id", id); else url.searchParams.delete("id");
     url.searchParams.delete("thread");
     url.searchParams.delete("version");
+    url.searchParams.delete("run");
     history.pushState({}, "", url);
   }
   function versionFromUrl() { return new URL(location.href).searchParams.get("version"); }
@@ -830,6 +928,7 @@ form.create input:focus { border-color: var(--accent); }
       $("pane-" + tab).hidden = tab !== name;
       $("tabs").querySelector('[data-tab="' + tab + '"]').setAttribute("aria-selected", String(tab === name));
     });
+    if (name === "runs") renderRunForm();
     const terminalTab = TERMINAL_TABS.includes(name);
     $("explore").hidden = !terminalTab;
     /* Do not load the terminal, or read its threads, merely because an Investigation opened. */
@@ -868,8 +967,13 @@ form.create input:focus { border-color: var(--accent); }
       : listState === "failed" ? "The list could not be loaded." : "No investigations yet.";
   }
   function renderDetail(record) {
+    if (current?.id !== record.id) { pageRuns = []; }
     current = record;
     currentVersion = null;
+    selections = new Map();
+    selectionsReady = false;
+    stopRunPolling();
+    currentRun = null;
     references = [];
     referencesReady = false;
     viewedThreadId = null;
@@ -890,6 +994,9 @@ form.create input:focus { border-color: var(--accent); }
   function renderHome() {
     current = null;
     currentVersion = null;
+    stopRunPolling();
+    currentRun = null;
+    pageRuns = [];
     references = [];
     referencesReady = false;
     viewedThreadId = null;
@@ -953,6 +1060,8 @@ form.create input:focus { border-color: var(--accent); }
       /* Cleared before the record's parts load, so an error from them stays on screen. */
       status("", false);
       await loadReferences(record.id, epoch);
+      const runRef = runsEnabled ? runFromUrl() : null;
+      if (runRef !== null && current?.id === record.id && epoch === requestEpoch) await openRun(runRef);
     } catch (cause) {
       if (epoch !== requestEpoch) return;
       if (cause.kind === "auth" || cause.kind === "unavailable") { showProblem(cause); return; }
@@ -1059,6 +1168,7 @@ form.create input:focus { border-color: var(--accent); }
     $("versions-rail").hidden = !versionsEnabled;
     $("model-pane-versions").hidden = !versionsEnabled;
     $("tab-model").hidden = !versionsEnabled;
+    $("tab-runs").hidden = !runsEnabled;
     if (!versionsEnabled) return;
     const ul = $("version-list");
     ul.textContent = "";
@@ -1213,6 +1323,311 @@ form.create input:focus { border-color: var(--accent); }
         true, cause.kind);
     } finally { setBusy(false); }
   }
+  /* ---------- Work-within selection (017): the conversation's context, read and chosen ---------- */
+  function selectedHere(reference) {
+    const selection = selections.get(reference.thread_id);
+    return !!selection && selection.reference_act_id === reference.reference_act_id;
+  }
+  /* Derived from the selection in force when runs are on; the reference list alone cannot know it. */
+  function referenceStateText(reference) {
+    if (!runsEnabled) {
+      return REFERENCE_STATUS[reference.status] + (reference.selection_act_id === null ? " · not selected as context" : "");
+    }
+    if (!selectionsReady) return "Referenced · context selection not read";
+    if (selectedHere(reference)) return "Referenced · selected as this conversation's context";
+    if (selections.get(reference.thread_id)) return "Referenced · this conversation's context is another Investigation";
+    return "Referenced only · not selected as context";
+  }
+  function renderContextFact() {
+    if (!runsEnabled) { $("context-fact").textContent = "Not selected"; return; }
+    if (!selectionsReady) { $("context-fact").textContent = references.length ? "Not read" : "Not selected"; return; }
+    const count = references.filter(selectedHere).length;
+    $("context-fact").textContent = count ? "Selected in " + count + (count === 1 ? " conversation" : " conversations") : "Not selected";
+  }
+  const selectionApi = Object.freeze({
+    inForce: async function (threadId) {
+      const row = await rpc("thread_selection", { p_thread_id: threadId }, "Selection");
+      if (row === null) return null;
+      if (!row || !idPattern.test(row.selection_act_id) || row.thread_id !== threadId ||
+          !idPattern.test(row.reference_act_id) || !idPattern.test(row.investigation_id) ||
+          typeof row.created_at !== "string") throw new Error("Selection has an unexpected shape");
+      return row;
+    },
+    select: async function (threadId, referenceActId, idempotencyKey) {
+      const row = await rpc("select_work", { p_thread_id: threadId, p_reference_act_id: referenceActId,
+                                             p_idempotency_key: idempotencyKey }, "Selection");
+      if (row && row.status === "selected" && idPattern.test(row.selection_act_id) && row.thread_id === threadId &&
+          row.reference_act_id === referenceActId) return row;
+      if (row && row.status === "refused" && idPattern.test(row.refusal_id) && SELECT_REFUSALS[row.code]) return row;
+      throw new Error("Selection answered in an unexpected shape");
+    }
+  });
+  async function loadSelections(refs, id) {
+    selections = new Map();
+    selectionsReady = false;
+    try {
+      const rows = await Promise.all(refs.map((ref) => selectionApi.inForce(ref.thread_id)));
+      if (current?.id !== id) return;
+      refs.forEach((ref, i) => selections.set(ref.thread_id, rows[i]));
+      selectionsReady = true;
+    } catch (cause) {
+      if (cause.kind === "auth") throw cause;
+      if (current?.id === id) status("The conversations' context selections could not be read. " + cause.message, true, cause.kind);
+    }
+  }
+  async function selectContext(reference) {
+    if (!runsEnabled || busy || !current || !selectionsReady) return;
+    const investigationId = current.id;
+    const slot = reference.thread_id + " " + reference.reference_act_id;
+    if (!pendingSelects.has(slot)) pendingSelects.set(slot, crypto.randomUUID());
+    setBusy(true);
+    status("Selecting this Investigation as the conversation's context…", false);
+    try {
+      const result = await selectionApi.select(reference.thread_id, reference.reference_act_id, pendingSelects.get(slot));
+      if (result.status === "refused") {
+        pendingSelects.delete(slot);
+        status(SELECT_REFUSALS[result.code], true, "act_refused");
+        return;
+      }
+      /* The selection in force has to name this act on a fresh read before it is shown. */
+      const inForce = await selectionApi.inForce(reference.thread_id);
+      if (current?.id !== investigationId) return;
+      if (!inForce || inForce.selection_act_id !== result.selection_act_id) {
+        throw new Error("Could not confirm the selection in force");
+      }
+      pendingSelects.delete(slot);
+      selections.set(reference.thread_id, inForce);
+      renderReferences();
+      renderRunForm();
+      status("Selected as this conversation's context. A run you start here can now use this conversation.", false);
+    } catch (cause) { report(cause); }
+    finally { setBusy(false); }
+  }
+
+  /* ---------- The user run: start through the run-start function, reopen its coarse state (018) ---------- */
+  const RUN_POLL_MS = 5000;
+  const START_ANSWERS = ["accepted", "replay", "unconfirmed"];
+  const RELEASE_CODES = ["act_unavailable", "run_expired", "release_replayed", "release_failed", "token_invalid",
+                         "request_invalid"];
+  function versionLabel(versionId) {
+    const row = versions.find((item) => item.version_id === versionId);
+    return row ? "Saved " + stamp(row.created_at, 16) + " UTC" : "Version " + versionId.slice(0, 8);
+  }
+  function renderRunForm() {
+    $("runs-panel").hidden = !runsEnabled;
+    if (!runsEnabled) return;
+    $("run-fixture").textContent = RUN_FIXTURE_ID + " v" + RUN_FIXTURE_VERSION;
+    const threadSelect = $("run-thread");
+    const keepThread = threadSelect.value;
+    const eligible = selectionsReady ? references.filter(selectedHere) : [];
+    threadSelect.replaceChildren();
+    threadSelect.appendChild(option("", eligible.length ? "Choose a conversation" : "No conversation has this Investigation as its context"));
+    eligible.forEach((ref) => threadSelect.appendChild(option(ref.thread_id, nameOfThread(ref.thread_id))));
+    threadSelect.value = eligible.some((ref) => ref.thread_id === keepThread) ? keepThread
+      : eligible.length === 1 ? eligible[0].thread_id : "";
+    const chosen = selections.get(threadSelect.value);
+    $("run-thread-note").textContent = !selectionsReady ? "The context selections could not be read."
+      : !eligible.length ? "Under Conversation, reference a conversation and select this Investigation as its context."
+      : chosen ? "Uses the context selection made " + stamp(chosen.created_at, 16) + " UTC." : "";
+    const versionSelect = $("run-version");
+    const keepVersion = versionSelect.value;
+    versionSelect.replaceChildren();
+    const usable = versionsState === "ready" ? versions : [];
+    versionSelect.appendChild(option("", usable.length ? "Choose a saved Model Version" : "No saved Model Version"));
+    usable.forEach((row) => versionSelect.appendChild(option(row.version_id, versionLabel(row.version_id))));
+    versionSelect.value = usable.some((row) => row.version_id === keepVersion) ? keepVersion : "";
+    $("run-version-note").textContent = versionsState !== "ready" ? "Your Model Versions could not be loaded."
+      : usable.length ? "" : "Save a Model Version first, under Your model versions.";
+    renderRunList();
+    syncControls();
+  }
+  function renderRunList() {
+    if (!runsEnabled) return;
+    const ul = $("run-list");
+    ul.textContent = "";
+    pageRuns.forEach((run) => {
+      const li = document.createElement("li");
+      li.className = "reference";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "reference-open";
+      button.dataset.testid = "run-open";
+      button.dataset.runRef = run.run_ref;
+      button.textContent = "Run " + run.run_ref.slice(0, 8);
+      button.setAttribute("aria-pressed", String(!!currentRun && currentRun.run_ref === run.run_ref));
+      button.addEventListener("click", () => { if (busy) return undefined; setRunUrl(run.run_ref); return openRun(run.run_ref); });
+      const state = document.createElement("span");
+      state.className = "reference-state";
+      state.textContent = run.status ? RUN_STATUS_TEXT[run.status][0] : "";
+      li.append(button, state);
+      ul.appendChild(li);
+    });
+    $("run-list-note").textContent = pageRuns.length
+      ? "Runs started or opened on this page. Keep a run's address to reopen it later."
+      : "No run opened on this page yet. A run you start appears here; keep its address to reopen it later.";
+  }
+  function rememberRun(runRef, details) {
+    let run = pageRuns.find((item) => item.run_ref === runRef);
+    if (!run) { run = { run_ref: runRef }; pageRuns.unshift(run); }
+    Object.assign(run, details);
+    return run;
+  }
+  /* Errors from the run-start function are its own, not PostgREST's. A lost or unconfirmed answer keeps
+     the click's key, so starting again with the same choices replays instead of starting twice. */
+  async function callRunStart(body) {
+    await freshSession();
+    let response;
+    try {
+      response = await fetch(SUPABASE_URL + "/functions/v1/run-start", {
+        method: "POST",
+        headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + session.access_token,
+                   "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (cause) {
+      throw serviceError("network", "The run-start service could not be reached.");
+    }
+    let payload = null;
+    try { payload = await response.json(); } catch (_) { payload = null; }
+    if (response.ok) return payload;
+    const code = payload && typeof payload.error === "string" ? payload.error : null;
+    const http = " (HTTP " + response.status + ")";
+    if (response.status === 401) throw serviceError("auth", "The run-start service did not accept this sign-in" + http + ".", 401, code);
+    if (response.status === 502 && code === "act_unconfirmed") {
+      throw serviceError("unconfirmed", "The run-start service could not confirm whether the run was started" + http + ".", 502, code);
+    }
+    if (response.status === 404) throw serviceError("unavailable", "The run-start service is not available on this server" + http + ".", 404, code);
+    if (response.status >= 500) throw serviceError("server", "The run-start service failed" + http + ".", response.status, code);
+    throw serviceError("refused", "The run-start service refused this request" + http + ".", response.status, code);
+  }
+  function startShape(row) {
+    if (row && START_ANSWERS.includes(row.status) && idPattern.test(row.run_ref)) return row;
+    if (row && row.status === "refused" && row.stage === "act" && START_REFUSALS[row.code]) return row;
+    if (row && row.status === "refused" && row.stage === "release" && RELEASE_CODES.includes(row.code) &&
+        idPattern.test(row.run_ref)) return row;
+    throw serviceError("server", "The run-start service answered in an unexpected shape.");
+  }
+  async function startRun(event) {
+    event.preventDefault();
+    if (!runsEnabled || busy || !current) return;
+    const threadId = $("run-thread").value;
+    const versionId = $("run-version").value;
+    const selection = selections.get(threadId);
+    if (!idPattern.test(threadId) || !idPattern.test(versionId) || !selection) return;
+    /* The page sends the selection it displayed; if another is now in force, the act refuses. */
+    const body = { thread_id: threadId, investigation_id: current.id, displayed_selection_act_id: selection.selection_act_id,
+                   version_id: versionId, fixture_id: RUN_FIXTURE_ID, fixture_version: RUN_FIXTURE_VERSION };
+    const signature = JSON.stringify(body);
+    if (!pendingStart || pendingStart.signature !== signature) pendingStart = { signature: signature, key: crypto.randomUUID() };
+    const investigationId = current.id;
+    setBusy(true);
+    status("Starting run…", false);
+    try {
+      const result = startShape(await callRunStart(Object.assign({}, body, { idempotency_key: pendingStart.key })));
+      pendingStart = null;
+      if (current?.id !== investigationId) return;
+      if (result.status === "refused" && result.stage === "act") {
+        status(START_REFUSALS[result.code], true, "act_refused");
+        if (["stale_selection", "selection_required", "target_not_selected"].includes(result.code)) {
+          selections.set(threadId, await selectionApi.inForce(threadId));
+          renderReferences();
+          renderRunForm();
+        }
+        return;
+      }
+      const notStarted = result.status === "refused";
+      rememberRun(result.run_ref, { notStarted: notStarted });
+      setRunUrl(result.run_ref);
+      await openRun(result.run_ref);
+      status(notStarted ? "The run could not be started. It will be recorded as lost at its deadline."
+        : result.status === "replay" ? "This start was already accepted. Showing that run."
+        : result.status === "unconfirmed" ? "The run was started, but the service's answer was lost. Its state shows here."
+        : "Run started.", notStarted, notStarted ? "not_started" : undefined);
+    } catch (cause) {
+      if (cause.kind === "auth") { report(cause); return; }
+      const unknownOutcome = pendingStart && ["network", "server", "unconfirmed"].includes(cause.kind);
+      if (!unknownOutcome) pendingStart = null;
+      status(cause.message + (unknownOutcome
+        ? " Starting again with the same choices repeats this request; it cannot start a second run." : ""),
+        true, cause.kind);
+    } finally { setBusy(false); }
+  }
+  const runApi = Object.freeze({
+    record: async function (runRef) {
+      const row = await rpc("run_record", { p_run_ref: runRef }, "Run");
+      if (row === null) return null;
+      if (!row || row.run_ref !== runRef || !RUN_STATUSES.includes(row.status)) {
+        throw new Error("Run record has an unexpected shape");
+      }
+      return row;
+    }
+  });
+  function runFromUrl() { return new URL(location.href).searchParams.get("run"); }
+  function setRunUrl(runRef) {
+    const url = new URL(location.href);
+    url.searchParams.set("run", runRef);
+    history.pushState({}, "", url);
+  }
+  function stopRunPolling() {
+    runEpoch += 1;
+    if (runTimer !== null) { clearTimeout(runTimer); runTimer = null; }
+  }
+  /* Only the coarse state is drawn: status, the run's short reference, its version, fixture, kind and
+     deadline. No evaluation id, outcome kind, refusal source, stage, producer state or hash. */
+  function renderRun(row) {
+    const [label, text] = RUN_STATUS_TEXT[row.status];
+    const known = pageRuns.find((item) => item.run_ref === row.run_ref);
+    $("run-status").className = "run-status " + row.status;
+    $("run-status").textContent = label;
+    $("run-status-text").textContent = known && known.notStarted && row.status === "pending"
+      ? "This run was not started: the service did not release it. It will be recorded as lost at its deadline." : text;
+    $("run-ref-read").textContent = row.run_ref.slice(0, 8);
+    $("run-version-read").textContent = idPattern.test(row.source_version_id || "") ? versionLabel(row.source_version_id) : "—";
+    $("run-fixture-read").textContent = row.fixture && typeof row.fixture.id === "string"
+      ? row.fixture.id + " v" + row.fixture.version : "—";
+    $("run-kind-read").textContent = row.run_kind
+      ? (row.run_kind.name === "platform_model_run" ? "Platform model run" : "Model run") + " · " + row.run_kind.status
+      : "Not recorded yet";
+    $("run-deadline-read").textContent = row.status === "pending" || row.status === "lost"
+      ? stamp(row.deadline_at, 16) + " UTC" : "—";
+    $("run-refresh").hidden = row.status !== "pending";
+  }
+  async function openRun(runRef) {
+    if (!runsEnabled || !current) return;
+    stopRunPolling();
+    const epoch = ++runEpoch;
+    const investigationId = current.id;
+    if (!idPattern.test(runRef)) { status("That run address is not valid.", true, "invalid"); return; }
+    showTab("runs", false);
+    $("run-detail").hidden = false;
+    $("run-status").className = "run-status";
+    $("run-status").textContent = "Reading";
+    $("run-status-text").textContent = "Reading the run's state…";
+    try {
+      const row = await runApi.record(runRef);
+      if (epoch !== runEpoch || current?.id !== investigationId) return;
+      if (!row) {
+        currentRun = null;
+        $("run-detail").hidden = true;
+        status("No run at that address belongs to this account.", true, "not_found");
+        renderRunList();
+        return;
+      }
+      currentRun = row;
+      rememberRun(row.run_ref, { status: row.status });
+      renderRun(row);
+      renderRunList();
+      if (row.status === "pending") {
+        runTimer = setTimeout(() => {
+          runTimer = null;
+          return epoch === runEpoch && currentRun && currentRun.run_ref === runRef ? openRun(runRef) : undefined;
+        }, RUN_POLL_MS);
+      }
+    } catch (cause) {
+      if (epoch !== runEpoch) return;
+      report(cause);
+    }
+  }
   function startCreate() {
     if (!enabled || busy || listState === "failed") return;
     $("heading").textContent = "New investigation";
@@ -1290,6 +1705,8 @@ form.create input:focus { border-color: var(--accent); }
       }
       pendingLinks.delete(slot);
       referenceWrites += 1;
+      if (runsEnabled) await loadSelections(fresh, investigationId);
+      if (current?.id !== investigationId) return;
       references = fresh;
       referencesReady = true;
       renderReferences();
@@ -1357,6 +1774,10 @@ form.create input:focus { border-color: var(--accent); }
   $("version-features").addEventListener("input", renderVersionDraft);
   $("version-l2").addEventListener("change", renderVersionDraft);
   $("version-cancel").addEventListener("click", () => { pendingSave = null; return reload(); });
+  $("run-form").addEventListener("submit", startRun);
+  $("run-thread").addEventListener("change", renderRunForm);
+  $("run-version").addEventListener("change", syncControls);
+  $("run-refresh").addEventListener("click", () => (currentRun ? openRun(currentRun.run_ref) : undefined));
   $("signin-again").addEventListener("click", () => { TclSession.clear(); location.replace(SIGNIN_URL); });
   $("problem-retry").addEventListener("click", reload);
   $("signout").addEventListener("click", signOut);
@@ -1373,7 +1794,11 @@ form.create input:focus { border-color: var(--accent); }
                     pendingCreate: pendingCreate !== null, pendingLinks: pendingLinks.size,
                     versionsEnabled: versionsEnabled, versionsState: versionsState,
                     versionId: currentVersion ? currentVersion.version_id : null,
-                    versions: versions.map((row) => row.version_id), pendingSave: pendingSave !== null }),
+                    versions: versions.map((row) => row.version_id), pendingSave: pendingSave !== null,
+                    runsEnabled: runsEnabled, selectionsReady: selectionsReady,
+                    selections: [...selections.entries()].map(([thread, row]) => [thread, row ? row.selection_act_id : null]),
+                    runRef: currentRun ? currentRun.run_ref : null, runStatus: currentRun ? currentRun.status : null,
+                    pageRuns: pageRuns.map((run) => run.run_ref), pendingStart: pendingStart !== null }),
     modelVersion: Object.freeze({ parse: parseFeatures, problems: draftProblems, canonical: canonicalVersion }),
     reload: reload
   });

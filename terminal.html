@@ -227,6 +227,16 @@ var TclSession = (function () {
   .msg.failed { border-color: var(--bad); color: var(--muted); }
   .meta { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
           color: var(--muted); margin: 0 0 6px; }
+  /* Under an answer: whether it was saved (specs/turn-record.md §14.1), and the record of what it
+     did and read (§15, §16.1). Read-only; nothing here is a control over the answer. */
+  .save { font-family: var(--mono); font-size: 11px; color: var(--bad); margin: 8px 0 0; white-space: normal; }
+  .save.unknown { color: var(--margin); }
+  .record, .record-note { margin: 8px 0 0; white-space: normal; font-size: 12px; color: var(--muted); }
+  .record-note { font-family: var(--mono); font-size: 11px; }
+  .record > summary { cursor: pointer; font-family: var(--mono); font-size: 11px; letter-spacing: .04em; }
+  .record-body { margin: 6px 0 0 2px; border-left: 1px solid var(--rule); padding: 2px 0 2px 10px;
+                 overflow-wrap: anywhere; }
+  .record-body p { margin: 0 0 6px; }
   /* ---- the reference card: what a chart leaves in the thread. One per chart, inside the
      assistant's message, built from the stored spec alone — no row is read to draw it. ---- */
   .refs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; white-space: normal; }
@@ -2591,6 +2601,7 @@ var ChartForms = (function () {
     setStatus("");
     resetPanel();
     const epoch = panel.epoch;
+    const answers = new Map();
     return rest("messages?select=id,role,content,charts,trace,created_at&thread_id=eq." + id + "&order=id.asc", true)
       .then((rows) => {
         /* The view this answer was fetched FOR may be gone: a second thread click lands here
@@ -2600,6 +2611,8 @@ var ChartForms = (function () {
           const err = m.role === "assistant" && !m.content && m.trace && m.trace.error;
           const body = addMessage(m.role, err ? "no reply: " + (m.trace.error.message || m.trace.error.kind) : m.content, m.created_at);
           if (err) body.parentNode.className = "msg assistant failed";
+          body.parentNode.setAttribute("data-message", String(m.id));
+          if (m.role === "assistant") answers.set(String(m.id), body.parentNode);
           /* A card and a tab per stored chart, from the spec alone. NO ROW IS READ HERE: a tab
            * pays for its rows when it is first opened. */
           (m.charts || []).forEach((c) => registerChart(body.parentNode, c, m.id));
@@ -2612,6 +2625,7 @@ var ChartForms = (function () {
         });
         projectPanel();
         scrollDown();
+        loadRecords(id, epoch, rows.length, answers);
         return loadThreads();
       });
   }
@@ -3359,6 +3373,151 @@ var ChartForms = (function () {
     return body;
   }
 
+  /* ---------- the turn record: save status and the Record panel ----------
+   * specs/turn-record.md §14.1 (save wording), §15 (the panel) and §16.1 (no stored figure). The
+   * readers are api.thread_record and api.turn_record. Either may be missing on a page released before
+   * its migration: the conversation still works, and the panel says the record is unavailable. */
+  const SAVE_TEXT = { false: "Unsaved — no durable record.", unknown: "Not confirmed saved. Reopen the thread to check." };
+  const RECORD_HEADER = "What this answer did and read. This record confers nothing.";
+  /* §16.1's stored figures. The reader omits them; naming them here means that a reader that let one
+   * through still puts nothing of it on the page. */
+  const WITHHELD = ["value", "n", "n_units", "row_count", "count_value", "candidate_count", "row_facts"];
+  /* models[].fallback_evidence in plain words. It records what was REPORTED, so none_reported says that
+   * none was reported, never that none happened. An unlisted value is shown as it came. */
+  const FALLBACK_TEXT = { fallback_reported: "fallback reported", none_reported: "fallback: none reported",
+                          iterations_not_returned: "fallback not known: the iterations were not returned" };
+
+  function api(name, body) {
+    const headers = Object.assign(restHeaders(true), { "Content-Type": "application/json",
+                                                       "Accept-Profile": "api", "Content-Profile": "api" });
+    return Promise.resolve()
+      .then(() => fetch(SUPABASE_URL + "/rest/v1/rpc/" + name, { method: "POST", headers: headers, body: JSON.stringify(body) }))
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status + " on " + name);
+        return r.json();
+      });
+  }
+
+  /* `persisted` from `done`: true adds nothing; false and "unknown" say exactly what was established;
+   * absent is an older function, from which nothing is inferred. Any other value is treated as absent. */
+  function showSave(msg, persisted) {
+    const text = persisted === false ? SAVE_TEXT.false : persisted === "unknown" ? SAVE_TEXT.unknown : null;
+    if (!text) return;
+    const p = document.createElement("p");
+    p.className = "save" + (persisted === "unknown" ? " unknown" : "");
+    p.textContent = text;
+    msg.appendChild(p);
+  }
+
+  function recordNote(msg, text) {
+    const p = document.createElement("p");
+    p.className = "record-note";
+    p.textContent = text;
+    msg.appendChild(p);
+  }
+
+  /* A scalar as text, or a pin as its identities ("key value, ..."). Withheld keys are dropped at every
+   * depth, and null renders nothing. */
+  function asText(value) {
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(", ");
+    if (value && typeof value === "object") {
+      return Object.keys(value).filter((k) => !WITHHELD.includes(k))
+        .map((k) => [k, asText(value[k])]).filter((kv) => kv[1]).map((kv) => kv[0] + " " + kv[1]).join(", ");
+    }
+    return "";
+  }
+  const listOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
+  /* A turn id is the question message's id (a bigint), passed back to turn_record as it came. */
+  const isTurnId = (v) => Number.isSafeInteger(v) || (typeof v === "string" && v !== "");
+  const byOrdinal = (a, b) => (Number(a.ordinal) || 0) - (Number(b.ordinal) || 0);
+
+  /* Every value goes in as text. A missing key renders nothing, and nothing is counted but the length of
+   * an array the reader returned. */
+  function fillRecord(body, doc) {
+    body.textContent = "";
+    if (!doc || typeof doc !== "object" || Array.isArray(doc)) { body.textContent = "The record is unavailable."; return; }
+    const line = (label, parts) => {
+      const kept = parts.filter((x) => x !== undefined && x !== null && x !== "");
+      if (!kept.length) return;
+      const p = document.createElement("p");
+      p.textContent = label + ": " + kept.map(asText).join(" · ");
+      body.appendChild(p);
+    };
+    const has = (o, k) => o[k] !== undefined && o[k] !== null && o[k] !== "";
+    line("Recorded", [doc.recorded_at]);
+    listOf(doc.models).forEach((m) => {
+      line("Model" + (has(m, "invocation_ordinal") ? " (call " + asText(m.invocation_ordinal) + ")" : ""), [
+        has(m, "requested") ? "requested " + asText(m.requested) : null,
+        has(m, "served") ? "served " + asText(m.served) : null,
+        has(m, "basis") ? "basis " + asText(m.basis) : null,
+        has(m, "fallback_evidence") ? (FALLBACK_TEXT[m.fallback_evidence] || "fallback: " + asText(m.fallback_evidence)) : null,
+        has(m, "stop_reason") ? "stop " + asText(m.stop_reason) : null]);
+    });
+    listOf(doc.invocations).slice().sort(byOrdinal).forEach((inv) => {
+      line("Call " + (has(inv, "ordinal") ? asText(inv.ordinal) : "?"), [inv.tool_name, inv.kind]);
+    });
+    listOf(doc.reads).slice().sort(byOrdinal).forEach((r) => {
+      line("Read" + (has(r, "invocation_ordinal") ? " (call " + asText(r.invocation_ordinal) + ")" : ""), [
+        r.source, has(r, "object") ? "table " + asText(r.object) : null,
+        has(r, "as_of_mode") ? "as of " + asText(r.as_of_mode) : null, r.outcome,
+        asText(r.pins) ? "pins " + asText(r.pins) : null]);
+    });
+    line("Ended", [doc.termination, doc.delivery_kind]);
+    line("Also recorded", [
+      Array.isArray(doc.quantities) ? doc.quantities.length + " quantities" : null,
+      Array.isArray(doc.entity_resolutions) ? doc.entity_resolutions.length + " entity resolutions" : null,
+      Array.isArray(doc.artifacts) ? doc.artifacts.length + " artifacts" : null]);
+    line("Record hash", [doc.document_sha256]);
+    if (!body.childNodes.length) body.textContent = "The record is unavailable.";
+  }
+
+  /* Collapsed and read-only. The record is read when it is first opened, and again only if that read failed. */
+  function addRecord(msg, turnId) {
+    const details = document.createElement("details");
+    details.className = "record";
+    details.setAttribute("data-turn", String(turnId));
+    const summary = document.createElement("summary");
+    summary.textContent = RECORD_HEADER;
+    const body = document.createElement("div");
+    body.className = "record-body";
+    details.appendChild(summary);
+    details.appendChild(body);
+    let read = null;
+    details.addEventListener("toggle", () => {
+      if (!details.open || read) return;
+      body.textContent = "reading the record";
+      read = api("turn_record", { p_turn_id: turnId })
+        .then((doc) => fillRecord(body, doc))
+        .catch(() => { read = null; body.textContent = "The record is unavailable."; });
+    });
+    msg.appendChild(details);
+  }
+
+  /* One read per thread load. Recorded answers get the panel, legacy answers say they have none; if the
+   * reader is missing or fails, every answer says the record is unavailable. The reader is
+   * thread_record(p_thread_id, p_before_id, p_limit) (§12): from the newest, as many as the page loaded.
+   * `answers` maps each rendered assistant message's id to its element. */
+  function loadRecords(threadId, epoch, loaded, answers) {
+    if (!answers.size) return Promise.resolve();
+    return api("thread_record", { p_thread_id: threadId, p_before_id: null, p_limit: loaded })
+      .then((items) => {
+        if (epoch !== panel.epoch) return;
+        if (!Array.isArray(items)) throw new Error("thread_record answered " + typeof items);
+        const byMessage = new Map(listOf(items).map((it) => [String(it.message_id), it]));
+        answers.forEach((msg, messageId) => {
+          const it = byMessage.get(messageId);
+          if (it && it.kind === "recorded" && isTurnId(it.turn_id)) addRecord(msg, it.turn_id);
+          else if (it && it.kind === "legacy") recordNote(msg, "There is no record for this answer.");
+        });
+      })
+      .catch(() => {
+        if (epoch !== panel.epoch) return;
+        answers.forEach((msg) => recordNote(msg, "The record is unavailable."));
+      });
+  }
+
   function scrollDown() {
     const box = $("messages");
     box.scrollTop = box.scrollHeight;
@@ -3468,6 +3627,11 @@ var ChartForms = (function () {
           turnTabs.forEach((t) => { t.messageId = d.message_id; });
           projectPanel();
         }
+        /* The answer's own nodes: harmless if the view has changed and they are detached. */
+        const answerMsg = answerBody.parentNode;
+        if (d.message_id !== undefined && d.message_id !== null) answerMsg.setAttribute("data-message", String(d.message_id));
+        if ("persisted" in d) showSave(answerMsg, d.persisted);
+        if (d.persisted === true && isTurnId(d.turn_id)) addRecord(answerMsg, d.turn_id);
       }
     };
     try {
