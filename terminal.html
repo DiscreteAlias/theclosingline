@@ -219,6 +219,8 @@ var TclSession = (function () {
   #threads li.current { background: var(--surface); color: var(--primary); }
   section { display: flex; flex-direction: column; min-width: 0; }
   #messages { flex: 1; overflow: auto; padding: 16px 20px; }
+  /* One plain line above the conversation: the working context the user selected, read by the page. */
+  .context-line { margin: 0; padding: 8px 20px 0; font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .msg { max-width: 820px; margin: 0 0 14px; padding: 10px 14px; border-radius: 6px; white-space: pre-wrap;
          overflow-wrap: anywhere; }
   .msg.user { background: var(--surface); border: 1px solid var(--rule); }
@@ -391,6 +393,7 @@ var TclSession = (function () {
     <ul id="threads"></ul>
   </aside>
   <section>
+    <p id="context-line" class="context-line" hidden></p>
     <div id="messages"></div>
     <div id="status" class="status"></div>
     <form id="composer">
@@ -2601,6 +2604,8 @@ var ChartForms = (function () {
     $("messages").textContent = "";
     setStatus("");
     resetPanel();
+    clearContext();
+    refreshContext(id);
     const epoch = panel.epoch;
     const answers = new Map();
     return rest("messages?select=*&thread_id=eq." + id + "&order=id.asc", true)
@@ -2650,6 +2655,7 @@ var ChartForms = (function () {
     $("messages").textContent = "";
     setStatus("");
     resetPanel();
+    clearContext();
     return loadThreads();
   }
 
@@ -3408,8 +3414,53 @@ var ChartForms = (function () {
     return Promise.resolve()
       .then(() => fetch(SUPABASE_URL + "/rest/v1/rpc/" + name, { method: "POST", headers: headers, body: JSON.stringify(body) }))
       .then((r) => {
-        if (!r.ok) throw new Error("HTTP " + r.status + " on " + name);
-        return r.json();
+        if (r.ok) return r.status === 204 ? null : r.json();
+        /* The status and PostgREST's error code ride on the error, for a caller that tells a missing
+         * reader (404, PGRST202) from a failed one. The message is what it was. */
+        return r.text().catch(() => "").then((t) => {
+          const e = new Error("HTTP " + r.status + " on " + name);
+          e.status = r.status;
+          try { e.code = JSON.parse(t).code; } catch (_) { e.code = undefined; }
+          throw e;
+        });
+      });
+  }
+
+  /* The working context line. The user's own selection, read by the page from the owner readers
+   * api.thread_selection (017) and api.get_investigation (013); nothing here comes from the terminal
+   * function or its `done` event. No selection, or a reader this database does not have yet (404 or
+   * PGRST202): no line. Any other failed read says so. The newest read wins, and a read for a view that
+   * has since changed paints nothing. */
+  let contextSeq = 0;
+  function clearContext() {
+    contextSeq += 1;
+    const el = $("context-line");
+    el.hidden = true;
+    el.textContent = "";
+  }
+  function refreshContext(threadId) {
+    if (!threadId) return Promise.resolve();
+    contextSeq += 1;
+    const seq = contextSeq;
+    const epoch = panel.epoch;
+    const paint = (text) => {
+      if (seq !== contextSeq || epoch !== panel.epoch || currentThread !== threadId) return;
+      const el = $("context-line");
+      el.textContent = text || "";
+      el.hidden = !text;
+    };
+    return api("thread_selection", { p_thread_id: threadId })
+      .then((sel) => {
+        if (sel === null || sel === undefined) return paint("");
+        if (typeof sel !== "object" || Array.isArray(sel) || typeof sel.investigation_id !== "string") throw new Error("thread_selection answered an unreadable selection");
+        return api("get_investigation", { p_id: sel.investigation_id }).then((inv) => {
+          if (!inv || typeof inv !== "object" || typeof inv.title !== "string" || inv.title === "") throw new Error("get_investigation answered no title");
+          paint("Selected working context: Investigation \"" + inv.title + "\". Each answer's Record says whether it had it.");
+        });
+      })
+      .catch((err) => {
+        const missing = err && (err.status === 404 || err.code === "PGRST202") && /on thread_selection$/.test(err.message || "");
+        paint(missing ? "" : "Working context: not read.");
       });
   }
 
@@ -3462,6 +3513,16 @@ var ChartForms = (function () {
     };
     const has = (o, k) => o[k] !== undefined && o[k] !== null && o[k] !== "";
     line("Recorded", [doc.recorded_at]);
+    /* From api.turn_record's `context` (022). An object: the Investigation the turn had and the selection
+     * it came from; null: it had none; a missing key (an older reader) says nothing. The note is not shown. */
+    if ("context" in doc) {
+      const c = doc.context;
+      if (c === null) line("Working context", ["none"]);
+      else if (typeof c === "object" && !Array.isArray(c)) {
+        line("Working context", [typeof c.title === "string" && c.title ? "Investigation \"" + c.title + "\"" : "Investigation",
+                                 has(c, "selection_act_id") ? "selection " + asText(c.selection_act_id) : null]);
+      }
+    }
     listOf(doc.models).forEach((m) => {
       line("Model" + (has(m, "invocation_ordinal") ? " (call " + asText(m.invocation_ordinal) + ")" : ""), [
         has(m, "requested") ? "requested " + asText(m.requested) : null,
@@ -3647,6 +3708,8 @@ var ChartForms = (function () {
         if (d.message_id !== undefined && d.message_id !== null) answerMsg.setAttribute("data-message", String(d.message_id));
         if ("persisted" in d) showSave(answerMsg, d.persisted);
         if (d.persisted === true && isTurnId(d.turn_id)) addRecord(answerMsg, d.turn_id);
+        /* The selection may have changed since the thread opened; the page reads it again. */
+        if (epoch === panel.epoch && currentThread) refreshContext(currentThread);
       }
     };
     try {
