@@ -221,6 +221,27 @@ var TclSession = (function () {
   #messages { flex: 1; overflow: auto; padding: 16px 20px; }
   /* One plain line above the conversation: the working context the user selected, read by the page. */
   .context-line { margin: 0; padding: 8px 20px 0; font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .context-line a { color: var(--accent); margin-left: 10px; }
+  /* Keep this conversation as an Investigation: a row under the newest answer, and its panel. */
+  .keep { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0 0; padding-top: 10px;
+          border-top: 1px solid var(--rule); white-space: normal; }
+  .keep-hint, .keep-note { font-size: 12px; color: var(--muted); }
+  button.fill { background: var(--accent); border-color: var(--accent); color: var(--page); font-weight: 600; }
+  .keep.keep-panel { display: block; border: 1px solid var(--accent); border-radius: 5px; background: var(--surface);
+                     padding: 12px 14px; }
+  .keep-panel > * { margin: 0 0 10px; }
+  .keep-panel > :last-child { margin-bottom: 0; }
+  .keep-head { font-size: 15px; font-weight: 600; }
+  .keep-panel label { display: block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                      color: var(--muted); margin-bottom: 4px; }
+  .keep-panel input { font: inherit; color: var(--primary); background: var(--panel); border: 1px solid var(--rule);
+                      border-radius: 4px; padding: 8px 10px; width: 100%; }
+  .keep-panel input:focus { outline: none; border-color: var(--accent); }
+  .keep-steps { padding-left: 22px; }
+  .keep-mark { color: var(--accent); }
+  .keep-status { font-size: 12px; color: var(--muted); min-height: 1.4em; }
+  .keep-status.bad { color: var(--bad); }
+  .keep-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .msg { max-width: 820px; margin: 0 0 14px; padding: 10px 14px; border-radius: 6px; white-space: pre-wrap;
          overflow-wrap: anywhere; }
   .msg.user { background: var(--surface); border: 1px solid var(--rule); }
@@ -2480,6 +2501,223 @@ var ChartForms = (function () {
 
 </script>
 <script>
+/* realdata/closingline/keep_flow.js, inlined verbatim: keeping a conversation as an Investigation,
+ * with no DOM in it. Proven by tests/realdata/closingline/keep_flow.test.mjs, which evaluates the
+ * file's own bytes. */
+/* The Closing Line — keeping a conversation as an Investigation: the flow, with no DOM in it.
+ *
+ * specs/keep-as-investigation.md. One click on the terminal records THREE existing acts, in order,
+ * each with its own idempotency key: api.create_investigation (013), api.link_thread (013),
+ * api.select_work (017). They are three transactions, not one, and the page says so. What makes that
+ * safe is the ATTEMPT: the thread, the owner, the name, the three keys and each answered step's id,
+ * written to storage before the first request and after each answered step. A retry, a reload or a
+ * second tab resends the same key, and each act returns its first result for a repeated key, so a
+ * retry cannot make a second record.
+ *
+ * This file calls nothing by itself. `run` is handed the page's own `api(name, body)`; `load`, `save`
+ * and `clear` are handed a storage object. That is what lets tests/realdata/closingline/
+ * keep_flow.test.mjs evaluate these bytes with no browser.
+ */
+var TclKeep = (function () {
+  "use strict";
+
+  var TITLE_MAX = 120;                 /* 013: length(btrim(p_title)) between 1 and 120 */
+  var STORE_PREFIX = "tcl.keep.";
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  var STEPS = ["create", "link", "select"];
+
+  function chars(text) { return Array.from(text).length; }      /* characters, as PostgreSQL counts them */
+  function clean(text) { return String(text === null || text === undefined ? "" : text).replace(/\s+/g, " ").trim(); }
+
+  /* A name from the thread's first question: whitespace collapsed, and cut at a word when it is longer
+   * than the server allows. Never longer than TITLE_MAX characters, and never empty for a real question. */
+  function suggestTitle(question) {
+    var text = clean(question);
+    if (chars(text) <= TITLE_MAX) return text;
+    var head = Array.from(text).slice(0, TITLE_MAX).join("");
+    var cut = head.lastIndexOf(" ");
+    return (cut >= TITLE_MAX / 2 ? head.slice(0, cut) : head).trim();
+  }
+
+  /* "" when the name is one the server accepts; otherwise the sentence the panel shows. */
+  function titleProblem(title) {
+    var n = chars(clean(title));
+    return n >= 1 && n <= TITLE_MAX ? "" : "Give the Investigation a name of 1 to " + TITLE_MAX + " characters.";
+  }
+
+  function fresh(threadId, owner, title, uuid) {
+    return { v: 1, thread_id: threadId, owner: owner, title: clean(title),
+             keys: { create: uuid(), link: uuid(), select: uuid() },
+             investigation_id: null, reference_act_id: null };
+  }
+
+  /* A stored attempt is used only if it is this thread's, this owner's, and whole. Anything else is
+   * treated as no attempt: storage is shared by every account that signs in on this browser. */
+  function valid(p, threadId, owner) {
+    return !!p && typeof p === "object" && p.v === 1 && p.thread_id === threadId && p.owner === owner &&
+      typeof p.title === "string" && titleProblem(p.title) === "" && p.title === clean(p.title) &&
+      !!p.keys && UUID.test(p.keys.create) && UUID.test(p.keys.link) &&
+      (p.keys.select === null || UUID.test(p.keys.select)) &&
+      (p.investigation_id === null || UUID.test(p.investigation_id)) &&
+      (p.reference_act_id === null || (UUID.test(p.reference_act_id) && p.investigation_id !== null));
+  }
+
+  function load(storage, threadId, owner) {
+    var p = null;
+    try { p = JSON.parse(storage.getItem(STORE_PREFIX + threadId)); } catch (e) { p = null; }
+    return valid(p, threadId, owner) ? p : null;
+  }
+  function save(storage, p) {
+    try { storage.setItem(STORE_PREFIX + p.thread_id, JSON.stringify(p)); } catch (e) { /* the retry decides */ }
+  }
+  function clear(storage, threadId) {
+    try { storage.removeItem(STORE_PREFIX + threadId); } catch (e) { /* nothing was held */ }
+  }
+  /* Signing out: an unfinished attempt names the reader, a thread and a question. None of it stays. */
+  function clearAll(storage) {
+    try {
+      var names = [];
+      for (var i = 0; i < storage.length; i += 1) names.push(storage.key(i));
+      names.forEach(function (name) { if (typeof name === "string" && name.indexOf(STORE_PREFIX) === 0) storage.removeItem(name); });
+    } catch (e) { /* nothing could be listed */ }
+  }
+
+  /* What a failed request established. Nothing is assumed about a step that did not answer: `network`
+   * and `server` are unknown outcomes, and the same key is sent again. */
+  function kindOf(err) {
+    var status = err && err.status;
+    if (err && err.keepShape) return "shape";
+    if (typeof status !== "number") return "network";
+    if (status === 401) return "auth";
+    /* 403 is the act not granted to this path (a served act is granted; an unserved one is revoked),
+     * 406 its schema not exposed, 404 PGRST202 the function not there. None of them is a sign-in. */
+    if (status === 403 || status === 406) return "unavailable";
+    if (status === 404) return err.code === "PGRST202" ? "unavailable" : "not_found";
+    if (status === 400 || status === 422) return "invalid";
+    if (status === 408 || status === 429 || status >= 500) return "server";
+    return "other";
+  }
+  function shapeError(what) {
+    var e = new Error(what + " answered in an unexpected shape");
+    e.keepShape = true;
+    return e;
+  }
+
+  /* One run of the attempt `p`. Resolves, never rejects, to one of:
+   *   { status: "kept", investigation_id, title }
+   *   { status: "failed", step, kind }                step: check | create | link | select | confirm
+   *   { status: "refused", step: "select", code }
+   *   { status: "superseded" }
+   * `opts.persist(p)` is called whenever `p` changed, `opts.forget()` when the attempt is over, and
+   * `opts.step(name, state)` as each step starts ("working") and answers ("done"). */
+  function run(p, api, opts) {
+    var persist = (opts && opts.persist) || function () {};
+    var forget = (opts && opts.forget) || function () {};
+    var note = (opts && opts.step) || function () {};
+    var uuid = opts && opts.uuid;
+    var at = "check";
+    var settled = null;
+
+    /* Before anything is recorded: what the page last read may be stale. Another tab, another browser
+     * or the workspace may have put this conversation to work in an Investigation since. If one is in
+     * force nothing is created; if it is this attempt's own, the attempt already succeeded. The window
+     * between this read and the select step stays open: closing it takes one database act, not three. */
+    function check() {
+      at = "check";
+      return api("thread_selection", { p_thread_id: p.thread_id }).then(function (sel) {
+        if (sel === null || sel === undefined) return;
+        if (typeof sel !== "object" || !UUID.test(sel.selection_act_id)) throw shapeError("thread_selection");
+        forget();
+        settled = p.investigation_id && sel.investigation_id === p.investigation_id
+          ? { status: "kept", investigation_id: p.investigation_id, title: p.title }
+          : { status: "superseded" };
+      });
+    }
+
+    function create() {
+      at = "create";
+      if (p.investigation_id) { note("create", "done"); return undefined; }
+      note("create", "working");
+      return api("create_investigation", { p_title: p.title, p_idempotency_key: p.keys.create }).then(function (row) {
+        if (!row || typeof row !== "object" || !UUID.test(row.id) || row.title !== p.title) throw shapeError("create_investigation");
+        p.investigation_id = row.id;
+        persist(p);
+        note("create", "done");
+      });
+    }
+
+    function link() {
+      at = "link";
+      if (p.reference_act_id) { note("link", "done"); return undefined; }
+      note("link", "working");
+      var args = { p_investigation_id: p.investigation_id, p_thread_id: p.thread_id, p_idempotency_key: p.keys.link };
+      return api("link_thread", args)
+        .catch(function (err) {
+          /* 409: this Investigation already references this conversation, by an act under another key.
+           * The reference list decides which act that is. */
+          if (!err || err.status !== 409) throw err;
+          return api("list_investigation_threads", { p_investigation_id: p.investigation_id }).then(function (rows) {
+            var hit = Array.isArray(rows) ? rows.filter(function (r) { return r && r.thread_id === p.thread_id; })[0] : null;
+            if (!hit) throw shapeError("list_investigation_threads");
+            return hit;
+          });
+        })
+        .then(function (row) {
+          if (!row || typeof row !== "object" || row.thread_id !== p.thread_id || !UUID.test(row.reference_act_id)) throw shapeError("link_thread");
+          p.reference_act_id = row.reference_act_id;
+          persist(p);
+          note("link", "done");
+        });
+    }
+
+    function select() {
+      at = "select";
+      note("select", "working");
+      if (!p.keys.select) { p.keys.select = uuid(); persist(p); }
+      var args = { p_thread_id: p.thread_id, p_reference_act_id: p.reference_act_id, p_idempotency_key: p.keys.select };
+      return api("select_work", args).then(function (row) {
+        if (row && row.status === "refused" && typeof row.code === "string") {
+          /* A refused key replays its refusal, so the next try needs a new one. The Investigation and
+           * the reference stay as they are. */
+          p.keys.select = null;
+          persist(p);
+          return { status: "refused", step: "select", code: row.code };
+        }
+        if (!row || row.status !== "selected" || !UUID.test(row.selection_act_id) || row.thread_id !== p.thread_id ||
+            row.reference_act_id !== p.reference_act_id || row.investigation_id !== p.investigation_id) throw shapeError("select_work");
+        return confirm(row.selection_act_id);
+      });
+    }
+
+    /* The selection in force has to name this act on a fresh read before anything says "kept". */
+    function confirm(selectionActId) {
+      at = "confirm";
+      return api("thread_selection", { p_thread_id: p.thread_id }).then(function (sel) {
+        if (!sel || typeof sel !== "object" || !UUID.test(sel.selection_act_id)) throw shapeError("thread_selection");
+        forget();
+        if (sel.selection_act_id !== selectionActId) return { status: "superseded" };
+        note("select", "done");
+        return { status: "kept", investigation_id: p.investigation_id, title: p.title };
+      });
+    }
+
+    return Promise.resolve().then(check).then(function () {
+      return settled || Promise.resolve().then(create).then(link).then(select);
+    }).catch(function (err) {
+      var kind = kindOf(err);
+      /* The server refused the name itself: nothing was created, and the name has to change. */
+      if (at === "create" && kind === "invalid") forget();
+      return { status: "failed", step: at, kind: kind };
+    });
+  }
+
+  return { TITLE_MAX: TITLE_MAX, STORE_PREFIX: STORE_PREFIX, STEPS: STEPS, clean: clean, suggestTitle: suggestTitle,
+           titleProblem: titleProblem, fresh: fresh, valid: valid, load: load, save: save, clear: clear,
+           clearAll: clearAll, kindOf: kindOf, run: run };
+})();
+
+</script>
+<script>
 (function () {
   "use strict";
 
@@ -2487,6 +2725,10 @@ var ChartForms = (function () {
   const FUNCTION_URL = SUPABASE_URL + "/functions/v1/" + FUNCTION_NAME;
   const AGENT_SESSION_URL = SUPABASE_URL + "/functions/v1/agent-session";
   const TERMINAL_AUTH_MODE = "agent-session";
+  /* specs/keep-as-investigation.md. Off until a release turns it on: the control's third line is true
+   * only where the terminal function runs with TERMINAL_CONTEXT=investigation. */
+  const KEEP_ON = "on" === "on";
+  const WORKSPACE_URL = "/";
   const LOGOUT_WAIT_MS = 2000;
 
   /* ---------- session: the one the sign-in page stored, through session.js ---------- */
@@ -2539,6 +2781,7 @@ var ChartForms = (function () {
     const was = session;
     session = null;
     TclSession.clear();
+    if (KEEP_ON) TclKeep.clearAll(keepStore());
     const out = was ? TclSession.logout(was).catch(() => {}) : Promise.resolve();
     return Promise.race([out, new Promise((r) => setTimeout(r, LOGOUT_WAIT_MS))])
       .then(() => { location.replace(SIGNIN_URL); });
@@ -2631,6 +2874,8 @@ var ChartForms = (function () {
           const err = m.role === "assistant" && !m.content && m.trace && m.trace.error;
           const body = addMessage(m.role, err ? "no reply: " + (m.trace.error.message || m.trace.error.kind) : m.content, m.created_at);
           if (err) body.parentNode.className = "msg assistant failed";
+          /* A turn that ended in an error is not an answer to keep, whatever text it got out first. */
+          if (KEEP_ON && m.role === "assistant" && m.trace && m.trace.error) body.parentNode.setAttribute("data-keep", "no");
           body.parentNode.setAttribute("data-message", String(m.id));
           if (m.role === "assistant") answers.set(String(m.id), body.parentNode);
           /* A card and a tab per stored chart, from the spec alone. NO ROW IS READ HERE: a tab
@@ -2644,6 +2889,8 @@ var ChartForms = (function () {
           });
         });
         projectPanel();
+        /* The context read may have answered before these rows were here to hang the control on. */
+        if (keepKnown && keepKnown.threadId === id) syncKeep(id, keepKnown.state);
         scrollDown();
         loadRecords(id, epoch, rows.length, answers);
         return loadThreads();
@@ -3400,6 +3647,7 @@ var ChartForms = (function () {
    * its migration: the conversation still works, and the panel says the record is unavailable. */
   const SAVE_TEXT = { false: "Unsaved — no durable record.", unknown: "Not confirmed saved. Reopen the thread to check." };
   const RECORD_HEADER = "What this answer did and read. This record confers nothing.";
+  const CONTEXT_NOT_ESTABLISHED = "not established (the turn ended before its context was read)";
   /* §16.1's stored figures. The reader omits them; naming them here means that a reader that let one
    * through still puts nothing of it on the page. */
   const WITHHELD = ["value", "n", "n_units", "row_count", "count_value", "candidate_count", "row_facts"];
@@ -3437,30 +3685,272 @@ var ChartForms = (function () {
     const el = $("context-line");
     el.hidden = true;
     el.textContent = "";
+    keepKnown = null;
+    withdrawKeep();
   }
+  /* Resolves to what the read established about this thread: "none" (it answered, and there is no
+   * selection), "selected", or "unknown" (it failed, or this database has no such reader). The Keep
+   * control is offered on "none" alone. */
   function refreshContext(threadId) {
     if (!threadId) return Promise.resolve();
     contextSeq += 1;
     const seq = contextSeq;
     const epoch = panel.epoch;
-    const paint = (text) => {
-      if (seq !== contextSeq || epoch !== panel.epoch || currentThread !== threadId) return;
+    const current = () => seq === contextSeq && epoch === panel.epoch && currentThread === threadId;
+    const paint = (text, inv) => {
+      if (!current()) return;
       const el = $("context-line");
-      el.textContent = text || "";
-      el.hidden = !text;
+      el.textContent = "";
+      if (KEEP_ON && inv) {
+        /* The flag's form of the same fact, with the way to the Investigation. The workspace may be
+         * framing this page, so the link takes the top window. */
+        const a = document.createElement("a");
+        a.href = WORKSPACE_URL + "?id=" + encodeURIComponent(inv.id);
+        a.target = "_top";
+        a.textContent = "Open the Investigation";
+        el.append("Working in: " + inv.title, a);
+      } else {
+        el.textContent = text || "";
+      }
+      el.hidden = !el.textContent;
     };
     return api("thread_selection", { p_thread_id: threadId })
       .then((sel) => {
-        if (sel === null || sel === undefined) return paint("");
+        if (sel === null || sel === undefined) { paint(""); return "none"; }
         if (typeof sel !== "object" || Array.isArray(sel) || typeof sel.investigation_id !== "string") throw new Error("thread_selection answered an unreadable selection");
         return api("get_investigation", { p_id: sel.investigation_id }).then((inv) => {
           if (!inv || typeof inv !== "object" || typeof inv.title !== "string" || inv.title === "") throw new Error("get_investigation answered no title");
-          paint("Selected working context: Investigation \"" + inv.title + "\". Each answer's Record says whether it had it.");
+          paint("Selected working context: Investigation \"" + inv.title + "\". Each answer's Record says whether it had it.",
+                { id: sel.investigation_id, title: inv.title });
+          return "selected";
         });
       })
       .catch((err) => {
         const missing = err && (err.status === 404 || err.code === "PGRST202") && /on thread_selection$/.test(err.message || "");
         paint(missing ? "" : "Working context: not read.");
+        return "unknown";
+      })
+      .then((state) => {
+        if (current()) { keepKnown = { threadId: threadId, state: state }; syncKeep(threadId, state); }
+        return state;
+      });
+  }
+
+  /* ---------- keep this conversation as an Investigation (specs/keep-as-investigation.md) ----------
+   * One click, three existing acts, each its own record: TclKeep (keep_flow.js) runs them and keeps
+   * the attempt, and this is only its face. The row sits under the newest answer and is offered only
+   * when the page's own read said the thread has no selection. What the line above says afterwards
+   * comes from refreshContext's read, never from this flow's belief. */
+  const KEEP_DOING = { check: "reading this conversation's context", create: "creating the Investigation",
+                       link: "adding this conversation", select: "setting this conversation to work in it",
+                       confirm: "confirming the selection" };
+  const KEEP_TIMEOUT_MS = 20000;
+  const KEEP_REFUSALS = {
+    target_unavailable: "That conversation reference is not available to this account. Nothing was selected.",
+    idempotency_conflict: "This selection conflicted with an earlier request, so nothing was selected. Try again."
+  };
+  let keepBusy = false;
+  /* What the newest context read established for the open thread, so the control can be placed when
+   * the thread's rows arrive after it. */
+  let keepKnown = null;
+  /* The attempt, held here as well as in storage: a browser that refuses the write must still resend
+   * the same keys on "Try again" within this page. */
+  const keepHeld = new Map();
+  function keepLoad(threadId) {
+    const owner = session && session.user ? session.user.id : null;
+    const stored = TclKeep.load(keepStore(), threadId, owner);
+    if (stored) return stored;
+    const held = keepHeld.get(threadId);
+    return TclKeep.valid(held, threadId, owner) ? held : null;
+  }
+  function keepSave(attempt) {
+    keepHeld.set(attempt.thread_id, attempt);
+    TclKeep.save(keepStore(), attempt);
+  }
+  function keepClear(threadId) {
+    keepHeld.delete(threadId);
+    TclKeep.clear(keepStore(), threadId);
+  }
+  /* A request that never answers must not hold the control for ever. Its outcome is unknown, which is
+   * what a dropped connection is, and the same key is sent again. */
+  function keepApi(name, body) {
+    return Promise.race([api(name, body), new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("no answer from " + name)), KEEP_TIMEOUT_MS);
+    })]);
+  }
+  function keepStore() {
+    try { if (window.localStorage) return window.localStorage; } catch (e) { /* no storage: no resume */ }
+    return { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  }
+  /* With the flag off this page does not look for the control at all: nothing of it can be there. */
+  function withdrawKeep() {
+    if (!KEEP_ON) return;
+    const el = $("keep");
+    if (el) el.remove();
+  }
+  /* The newest answer that is an answer: not a failed one, not the loose text before one, not empty. */
+  function keepAnchor() {
+    const all = $("messages").querySelectorAll(".msg.assistant");
+    for (let i = all.length - 1; i >= 0; i -= 1) {
+      const body = all[i].querySelector(".body");
+      if (all[i].className === "msg assistant" && all[i].getAttribute("data-keep") !== "no" && body && body.textContent) return all[i];
+    }
+    return null;
+  }
+  function syncKeep(threadId, state) {
+    if (!KEEP_ON || keepBusy) return null;
+    withdrawKeep();
+    /* The thread works in an Investigation, so an attempt left in storage has nothing left to do: its
+     * last step went through unanswered, or another selection was made. It is not offered again. */
+    if (state === "selected" && threadId) keepClear(threadId);
+    if (state !== "none" || !threadId || threadId !== currentThread || !session || !session.user) return null;
+    const anchor = keepAnchor();
+    if (!anchor) return null;
+    const pending = keepLoad(threadId);
+    const row = document.createElement("div");
+    row.id = "keep";
+    row.className = "keep";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.id = "keep-open";
+    open.className = "fill";
+    open.textContent = pending ? "Finish keeping this as an Investigation" : "Keep this as an Investigation";
+    const hint = document.createElement("span");
+    hint.className = "keep-hint";
+    hint.textContent = "One place for this conversation and whatever you build from it.";
+    open.addEventListener("click", () => openKeep(threadId, row));
+    row.append(open, hint);
+    const atEnd = anchor === $("messages").lastElementChild;
+    anchor.appendChild(row);
+    /* Under the last row the control is new height below the fold; the conversation follows it. */
+    if (atEnd) scrollDown();
+    return open;
+  }
+  function keepNode(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+  }
+  function markKeep(ui, step, state) {
+    const li = ui.steps[step];
+    if (!li) return;
+    li.setAttribute("data-state", state);
+    li.lastChild.textContent = state === "done" ? " · recorded" : state === "working" ? " · recording" : "";
+  }
+  function sayKeep(ui, text, bad) {
+    ui.status.textContent = text;
+    ui.status.className = "keep-status" + (bad ? " bad" : "");
+  }
+  function openKeep(threadId, row) {
+    if (keepBusy || threadId !== currentThread) return;
+    const pending = keepLoad(threadId);
+    const question = $("messages").querySelector(".msg.user .body");
+    row.textContent = "";
+    row.className = "keep keep-panel";
+    const field = keepNode("div");
+    const label = keepNode("label", "", "Name");
+    label.htmlFor = "keep-name";
+    const input = document.createElement("input");
+    input.id = "keep-name";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.value = pending ? pending.title : TclKeep.suggestTitle(question ? question.textContent : "");
+    /* Once a click has been made the name belongs to that attempt: a new name would be a new create. */
+    input.disabled = !!pending;
+    field.append(label, input);
+    const list = keepNode("ol", "keep-steps");
+    const steps = {};
+    [["create", "A new Investigation with this name."],
+     ["link", "This conversation, added to it."],
+     ["select", "This conversation set to work in it, so the assistant knows the Investigation, and each answer's Record says whether it had it."]
+    ].forEach((pair) => {
+      const li = keepNode("li", "", pair[1]);
+      li.setAttribute("data-step", pair[0]);
+      li.appendChild(keepNode("span", "keep-mark"));
+      steps[pair[0]] = li;
+      list.appendChild(li);
+    });
+    const actions = keepNode("div", "keep-actions");
+    const go = keepNode("button", "fill", pending ? "Continue" : "Keep");
+    go.type = "button";
+    go.id = "keep-go";
+    const cancel = keepNode("button", "", "Not now");
+    cancel.type = "button";
+    cancel.id = "keep-cancel";
+    actions.append(go, cancel);
+    const status = keepNode("p", "keep-status");
+    status.id = "keep-status";
+    status.setAttribute("role", "status");
+    const ui = { row: row, input: input, go: go, cancel: cancel, status: status, steps: steps };
+    row.append(
+      keepNode("div", "keep-head", "Keep this as an Investigation"), field,
+      keepNode("p", "keep-note", pending ? "This name belongs to the attempt already started." : "Suggested from your question. Change it if you like."),
+      keepNode("p", "", "One click records three things, each as its own entry:"), list,
+      keepNode("p", "keep-note", "Nothing is run and nothing is shared. Only you can read it."),
+      status, actions);
+    if (pending && pending.investigation_id) markKeep(ui, "create", "done");
+    if (pending && pending.reference_act_id) markKeep(ui, "link", "done");
+    go.addEventListener("click", () => runKeep(threadId, ui));
+    cancel.addEventListener("click", () => {
+      if (keepBusy) return;
+      const again = syncKeep(threadId, "none");
+      if (again) again.focus({ preventScroll: true });
+    });
+    /* The panel is taller than the row it replaced, and the conversation scrolls: bring it into view. */
+    row.scrollIntoView({ block: "nearest" });
+    (pending ? go : input).focus({ preventScroll: true });
+  }
+  function keepFailure(out) {
+    const doing = KEEP_DOING[out.step] || "recording";
+    if (out.status === "refused") return KEEP_REFUSALS[out.code] || "The selection was refused, so nothing was selected.";
+    if (out.kind === "network") return "The connection dropped while " + doing + ". Try again continues from that step; it cannot record anything twice.";
+    if (out.kind === "server") return "The service did not answer while " + doing + ". Try again continues from that step; it cannot record anything twice.";
+    if (out.kind === "auth") return "Your sign-in was not accepted while " + doing + ". Sign in again, then continue.";
+    if (out.kind === "unavailable") return "This step is not served here, so " + doing + " did not happen. What was recorded before it stays.";
+    if (out.kind === "invalid" && out.step === "create") return "The service refused that name, so nothing was recorded. Change the name and try again.";
+    return "The service's answer while " + doing + " could not be used. Try again continues from that step.";
+  }
+  function runKeep(threadId, ui) {
+    if (keepBusy) return;
+    let attempt = keepLoad(threadId);
+    if (!attempt) {
+      const problem = TclKeep.titleProblem(ui.input.value);
+      if (problem) { sayKeep(ui, problem, true); return; }
+      attempt = TclKeep.fresh(threadId, session.user.id, ui.input.value, () => crypto.randomUUID());
+      keepSave(attempt);
+    }
+    keepBusy = true;
+    ui.input.value = attempt.title;
+    ui.input.disabled = true;
+    ui.go.disabled = true;
+    ui.cancel.disabled = true;
+    sayKeep(ui, "Recording…", false);
+    const hooks = { uuid: () => crypto.randomUUID(), persist: keepSave,
+                    forget: () => keepClear(threadId), step: (name, state) => markKeep(ui, name, state) };
+    refreshIfNeeded()
+      .then((ok) => (ok ? TclKeep.run(attempt, keepApi, hooks) : { status: "failed", step: "check", kind: "auth" }))
+      .catch(() => ({ status: "failed", step: "check", kind: "network" }))
+      .then((out) => {
+        keepBusy = false;
+        const over = out.status === "kept" || out.status === "superseded";
+        if (!over && ui.row.isConnected && currentThread === threadId) {
+          Object.keys(ui.steps).forEach((name) => {
+            if (ui.steps[name].getAttribute("data-state") === "working") markKeep(ui, name, "");
+          });
+          sayKeep(ui, keepFailure(out), true);
+          ui.go.textContent = "Try again";
+          ui.go.disabled = false;
+          ui.cancel.disabled = false;
+          /* The attempt is gone only when the name itself was refused; then the name is free again. */
+          ui.input.disabled = !!keepLoad(threadId);
+          ui.row.scrollIntoView({ block: "nearest" });
+          ui.go.focus({ preventScroll: true });
+          return;
+        }
+        /* Kept, superseded, or the reader has moved on: the page reads the thread it is on, and that
+         * read decides the line and whether the control is offered. */
+        if (currentThread) refreshContext(currentThread);
       });
   }
 
@@ -3514,10 +4004,12 @@ var ChartForms = (function () {
     const has = (o, k) => o[k] !== undefined && o[k] !== null && o[k] !== "";
     line("Recorded", [doc.recorded_at]);
     /* From api.turn_record's `context` (022). An object: the Investigation the turn had and the selection
-     * it came from; null: it had none; a missing key (an older reader) says nothing. The note is not shown. */
+     * it came from; null: it had none; a missing key (an older reader) says nothing. The note is not shown.
+     * One null is not "none": a turn that ended while its context was being assembled (the lookup failed,
+     * was refused, or timed out) never learned whether there was a selection, and the line says so. */
     if ("context" in doc) {
       const c = doc.context;
-      if (c === null) line("Working context", ["none"]);
+      if (c === null) line("Working context", [doc.termination === "context_failure" ? CONTEXT_NOT_ESTABLISHED : "none"]);
       else if (typeof c === "object" && !Array.isArray(c)) {
         line("Working context", [typeof c.title === "string" && c.title ? "Investigation \"" + c.title + "\"" : "Investigation",
                                  has(c, "selection_act_id") ? "selection " + asText(c.selection_act_id) : null]);
@@ -3653,6 +4145,7 @@ var ChartForms = (function () {
     if (!(await refreshIfNeeded())) return;
     sending = true;
     $("send").disabled = true;
+    if (!keepBusy) withdrawKeep();
     addMessage("user", text, new Date().toISOString());
     const answerBody = addMessage("assistant", "", null);
     let looseBody = null;
@@ -3706,6 +4199,7 @@ var ChartForms = (function () {
         /* The answer's own nodes: harmless if the view has changed and they are detached. */
         const answerMsg = answerBody.parentNode;
         if (d.message_id !== undefined && d.message_id !== null) answerMsg.setAttribute("data-message", String(d.message_id));
+        if (KEEP_ON && !d.ok) answerMsg.setAttribute("data-keep", "no");
         if ("persisted" in d) showSave(answerMsg, d.persisted);
         if (d.persisted === true && isTurnId(d.turn_id)) addRecord(answerMsg, d.turn_id);
         /* The selection may have changed since the thread opened; the page reads it again. */
