@@ -2596,6 +2596,26 @@ var TclRun = (function () {
   var COUNTS = ["Computed on ", " rows from ", " events."];
   /* A pending run this page has stopped reading. The workspace has no such sentence: it never stops. */
   var PENDING_GAVE_UP = "The run has started. Its result is not recorded yet. Reopen this conversation to check again.";
+  /* Why nothing was compared, for a run whose record carries a stored reason (api.run_record's `reason_code`,
+   * migration 024; specs/run-results.md section 4). A CLOSED table, status then code. A code that is not here,
+   * a record with no reason_code (a database before 024) and every other status say nothing, and the card keeps
+   * the sentence it has today. No sentence holds a figure. */
+  var REASON_TEXT = {
+    refused: {
+      unknown_feature: "The evaluation was refused: the model names a feature this evaluation's data does not have. Nothing was compared.",
+      feature_available_after_reference: "The evaluation was refused: the model uses a feature whose value was only available after the moment it predicts. Nothing was compared.",
+      fixture_unavailable: "The evaluation was refused: the evaluation data this run asked for is not registered. Nothing was compared.",
+      source_integrity_mismatch: "The evaluation was refused: the saved model's bytes did not match the identity recorded when it was saved. Nothing was compared.",
+      source_schema_unsupported: "The evaluation was refused: the saved model is in a format this evaluation does not read. Nothing was compared.",
+      source_invalid: "The evaluation was refused: the saved model could not be loaded as a valid model. Nothing was compared.",
+      final_test_below_minimum: "The evaluation was refused: the final test had fewer rows or events than the evaluation requires. Nothing was compared.",
+      forecast_out_of_domain: "The evaluation was refused: a forecast was not a probability strictly between zero and one. Nothing was compared."
+    },
+    not_evaluated: {
+      source_read_failed: "The run stopped because the saved model could not be read, so nothing was compared.",
+      producer_exception: "The run stopped on an internal error before a comparison was completed, so nothing was compared."
+    }
+  };
 
   function own(table, key) { return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key); }
   function finite(v) { return typeof v === "number" && isFinite(v); }
@@ -2666,11 +2686,41 @@ var TclRun = (function () {
     return out;
   }
 
-  /* A saved version's bytes in words, or null. Only the one schema this page knows, read strictly: a list
-   * of plain names and a penalty. Anything else says nothing rather than something wrong. */
+  /* The reason sentence of one record, or null: a refused or not-evaluated run whose reason_code is in the
+   * closed table for that status. Anything else is null, never a guess. */
+  function reasonSentence(record) {
+    if (record === null || typeof record !== "object" || Array.isArray(record)) return null;
+    if (!own(REASON_TEXT, record.status)) return null;
+    var table = REASON_TEXT[record.status];
+    return own(table, record.reason_code) ? table[record.reason_code] : null;
+  }
+
+  /* `describe`, with the reason sentence in place of the status sentence when there is one. A page opts in by
+   * calling this instead of `describe`; an unknown code leaves `describe`'s answer as it is. */
+  function describeWithReason(record) {
+    var out = describe(record);
+    var why = reasonSentence(record);
+    if (why !== null && out.status !== null) { out.sentence = why; out.reason = true; }
+    return out;
+  }
+
+  /* A composable model (`tcl-model-spec/1`, specs/model-spec-js.md) in words, or null. This file is inlined on
+   * its own and imports nothing, so the validator and its wording are another script's: model_spec.js, which a
+   * page inlines AHEAD of this one when it shows such models. Without it there is no validator here, so nothing is
+   * said. The words are that script's and are never built here. */
+  function specWords(content) {
+    var spec = typeof TclModelSpec === "object" && TclModelSpec !== null ? TclModelSpec : null;
+    if (spec === null || typeof spec.modelWords !== "function") return null;
+    var words = spec.modelWords(content);
+    return typeof words === "string" && words !== "" ? words : null;
+  }
+
+  /* A saved version's bytes in words, or null. Two schemas. The first, read strictly here: a list of plain names
+   * and a penalty. The second is specWords'. Anything else says nothing rather than something wrong. */
   function modelWords(content) {
     var doc;
     try { doc = JSON.parse(content); } catch (e) { return null; }
+    if (doc && typeof doc === "object" && doc.schema === "tcl-model-spec/1") return specWords(content);
     if (!doc || typeof doc !== "object" || doc.schema !== "journey0-param-model/1" || doc.kind !== "logit_l2") return null;
     if (!Array.isArray(doc.features) || !doc.features.length || typeof doc.l2 !== "string" || !/^[0-9.]{1,8}$/.test(doc.l2)) return null;
     if (!doc.features.every(function (f) { return typeof f === "string" && /^[a-z][a-z0-9_]{0,31}$/.test(f); })) return null;
@@ -2717,7 +2767,8 @@ var TclRun = (function () {
   return { STATUSES: STATUSES, STATUS_TEXT: STATUS_TEXT, SCORE_KEYS: SCORE_KEYS, SCORE_CLASSES: SCORE_CLASSES, SCORE_NAMES: SCORE_NAMES,
            SCORE_DIRECTIONS: SCORE_DIRECTIONS, UNREADABLE: UNREADABLE, LABELS: LABELS, DIFFERENCE: DIFFERENCE, COUNTS: COUNTS,
            PENDING_GAVE_UP: PENDING_GAVE_UP, readScore: readScore, chart: chart, describe: describe,
-           modelWords: modelWords, runsOf: runsOf, lineId: lineId, group: group };
+           modelWords: modelWords, runsOf: runsOf, lineId: lineId, group: group,
+           REASON_TEXT: REASON_TEXT, reasonSentence: reasonSentence, describeWithReason: describeWithReason };
 })();
 
 </script>
@@ -3169,6 +3220,26 @@ var TclKeep = (function () {
         loadRecords(id, epoch, rows.length, answers);
         return loadThreads();
       });
+  }
+
+  /* A conversation named in the address: `#thread=<uuid>`, as the workspace's timeline links here
+   * (specs/terminal-run-results.md §5). Read once, after the first list has been asked for; a boot whose
+   * session could not be used asked for none, and opens none. The id is asked for with the reader's own
+   * token, so the database's row level security decides whether it is theirs: exactly one row with that
+   * id opens it through openThread, the function a click calls. Any other fragment, no row, a failed
+   * read, or a conversation already open leaves the page as it is. A fragment reaches no server, and
+   * nothing here writes one. */
+  const THREAD_HASH = /^#thread=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  function openNamedThread() {
+    const named = THREAD_HASH.exec((typeof location === "object" && location && location.hash) || "");
+    if (!named || !session || threadsSeq === 0 || currentThread || sending) return Promise.resolve();
+    const id = named[1];
+    return rest("threads?select=id&id=eq." + id, true)
+      .then((rows) => {
+        if (!Array.isArray(rows) || rows.length !== 1 || !rows[0] || rows[0].id !== id || currentThread || sending) return undefined;
+        return openThread(id);
+      })
+      .catch(() => undefined);
   }
 
   function newThread() {
@@ -4028,7 +4099,10 @@ var TclKeep = (function () {
     return versionWords.get(versionId);
   }
   function paintRun(card, record, gaveUp) {
-    const d = TclRun.describe(record);
+    /* A refused or not-evaluated run's stored reason, in a sentence, where the record carries a code the closed
+     * table knows (api.run_record's `reason_code`, migration 024). No code, or one outside the table: describe's
+     * own answer, the sentence this card has always had. */
+    const d = TclRun.describeWithReason(record);
     /* The pending sentence promises another read. Once this page has stopped reading, it says that instead. */
     if (d.pending && gaveUp) d.sentence = TclRun.PENDING_GAVE_UP;
     card.textContent = "";
@@ -4659,6 +4733,7 @@ var TclKeep = (function () {
     $("who").textContent = session.user.email || session.user.id || "";
     return refreshIfNeeded()
       .then((ok) => (ok ? loadThreads() : undefined))
+      .then(() => openNamedThread())
       .catch((err) => setStatus("threads: " + err.message, true));
   }
 
