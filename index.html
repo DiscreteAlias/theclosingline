@@ -113,6 +113,230 @@ var TclSession = (function () {
 })();
 </script>
 <script>
+/* The Closing Line — what a run's record says, with no DOM in it.
+ *
+ * specs/conversation-readers.md §3. The terminal draws a run's result where the run happened, from the
+ * owner's own read of api.thread_runs (023), whose `record` is api.run_record's answer (018, 021). This
+ * file turns one record into the words and the geometry of its card. It reads nothing and draws nothing:
+ * tests/realdata/closingline/run_card.test.mjs evaluates these bytes with no browser.
+ *
+ * THE WORDS ARE THE WORKSPACE PAGE'S. STATUS_TEXT, SCORE_CLASSES, SCORE_NAMES and SCORE_DIRECTIONS are
+ * the constants of templates/investigations.html, and the test compares the two files, so the same run
+ * cannot read differently on the two pages.
+ *
+ * NEVER A FIGURE WITHOUT ITS CLASS AND DISCLOSURE (specs/run-score.md §6): `describe` returns a score
+ * only when the whole score is readable, and then the class, the disclosure and the figures come out
+ * together. An unreadable score gives no figure at all.
+ */
+var TclRun = (function () {
+  "use strict";
+
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  var STATUSES = ["pending", "completed", "refused", "not_evaluated", "lost"];
+  var STATUS_TEXT = {
+    pending: ["Pending", "The run has started. Its result is not recorded yet; this page checks again."],
+    completed: ["Completed", "The evaluation finished and its outcome is recorded. A provisional run supports no decision."],
+    refused: ["Refused", "The evaluation was refused, so nothing was compared. The reason is not shown here."],
+    not_evaluated: ["Not evaluated", "The run stopped before a comparison was completed, so nothing was compared."],
+    lost: ["Lost", "No outcome was recorded before the run's deadline, so nothing was compared."]
+  };
+  var SCORE_KEYS = ["baseline_mean", "candidate_mean", "difference_hi", "difference_lo", "difference_mean", "direction",
+    "disclosure", "evidence_class", "n_events", "n_rows", "name"];
+  var SCORE_CLASSES = { synthetic_backtest: "Synthetic backtest", historical_backtest: "Historical backtest" };
+  var SCORE_NAMES = {
+    log: "Mean log score on the final test rows. Lower is better.",
+    brier: "Mean Brier score on the final test rows. Lower is better."
+  };
+  var SCORE_DIRECTIONS = {
+    candidate_lower: "Your model scored lower (better) and the interval excludes zero.",
+    baseline_lower: "The baseline scored lower (better) and the interval excludes zero.",
+    interval_spans_zero: "The interval includes zero, so these rows do not separate them."
+  };
+  var UNREADABLE = "Completed. The score could not be read, so none is shown.";
+  /* The two figures' names, and the sentences around the difference and the counts: the workspace page's own
+   * words (its renderScore), which the test reads out of that page. */
+  var LABELS = { candidate: "Your model", baseline: "Market-only baseline" };
+  var DIFFERENCE = ["Difference (yours minus baseline): ", ", interval ", " to ", " (mean plus or minus 1.96 standard errors, clustered by event)"];
+  var COUNTS = ["Computed on ", " rows from ", " events."];
+  /* A pending run this page has stopped reading. The workspace has no such sentence: it never stops. */
+  var PENDING_GAVE_UP = "The run has started. Its result is not recorded yet. Reopen this conversation to check again.";
+  /* Why nothing was compared, for a run whose record carries a stored reason (api.run_record's `reason_code`,
+   * migration 024; specs/run-results.md section 4). A CLOSED table, status then code. A code that is not here,
+   * a record with no reason_code (a database before 024) and every other status say nothing, and the card keeps
+   * the sentence it has today. No sentence holds a figure. */
+  var REASON_TEXT = {
+    refused: {
+      unknown_feature: "The evaluation was refused: the model names a feature this evaluation's data does not have. Nothing was compared.",
+      feature_available_after_reference: "The evaluation was refused: the model uses a feature whose value was only available after the moment it predicts. Nothing was compared.",
+      fixture_unavailable: "The evaluation was refused: the evaluation data this run asked for is not registered. Nothing was compared.",
+      source_integrity_mismatch: "The evaluation was refused: the saved model's bytes did not match the identity recorded when it was saved. Nothing was compared.",
+      source_schema_unsupported: "The evaluation was refused: the saved model is in a format this evaluation does not read. Nothing was compared.",
+      source_invalid: "The evaluation was refused: the saved model could not be loaded as a valid model. Nothing was compared.",
+      final_test_below_minimum: "The evaluation was refused: the final test had fewer rows or events than the evaluation requires. Nothing was compared.",
+      forecast_out_of_domain: "The evaluation was refused: a forecast was not a probability strictly between zero and one. Nothing was compared."
+    },
+    not_evaluated: {
+      source_read_failed: "The run stopped because the saved model could not be read, so nothing was compared.",
+      producer_exception: "The run stopped on an internal error before a comparison was completed, so nothing was compared."
+    }
+  };
+
+  function own(table, key) { return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key); }
+  function finite(v) { return typeof v === "number" && isFinite(v); }
+  function four(v) { return v.toFixed(4); }
+
+  /* The whole score, or null. Exactly the eleven keys, a known class, name and direction, a disclosure,
+   * finite figures and whole counts: the workspace page's rule, restated. */
+  function readScore(score) {
+    if (score === null || typeof score !== "object" || Array.isArray(score)) return null;
+    var keys = Object.keys(score);
+    if (keys.length !== SCORE_KEYS.length || !SCORE_KEYS.every(function (k) { return Object.prototype.hasOwnProperty.call(score, k); })) return null;
+    if (!own(SCORE_CLASSES, score.evidence_class) || !own(SCORE_NAMES, score.name) || !own(SCORE_DIRECTIONS, score.direction)) return null;
+    if (typeof score.disclosure !== "string" || score.disclosure.trim() === "") return null;
+    if (![score.candidate_mean, score.baseline_mean, score.difference_mean, score.difference_lo, score.difference_hi].every(finite)) return null;
+    var count = function (v) { return typeof v === "number" && Math.floor(v) === v && v >= 0; };
+    if (!count(score.n_rows) || !count(score.n_events)) return null;
+    return score;
+  }
+
+  /* Where the marks go, as percentages of their track, from the figures alone.
+   * Bars: each score against the larger of the two, which fills 96% of the track. A score below zero, or
+   * two zeros, has no honest bar on a track that starts at zero, so there are none.
+   * Interval: a line from the smaller of (lo, 0) to the larger of (hi, 0), padded by 15% of that span at
+   * each end, with the interval, its mean and zero placed on it. An interval the wrong way round, or a
+   * mean outside it, is not drawn. */
+  function chart(score) {
+    var top = Math.max(score.candidate_mean, score.baseline_mean);
+    var bars = null;
+    if (score.candidate_mean >= 0 && score.baseline_mean >= 0 && top > 0) {
+      bars = { candidate: score.candidate_mean / top * 96, baseline: score.baseline_mean / top * 96 };
+    }
+    var interval = null;
+    var lo = score.difference_lo, hi = score.difference_hi, mean = score.difference_mean;
+    if (lo <= mean && mean <= hi) {
+      var left = Math.min(lo, 0), right = Math.max(hi, 0);
+      var pad = (right - left) * 0.15 || 1;
+      var span = (right - left) + 2 * pad;
+      var at = function (x) { return (x - (left - pad)) / span * 100; };
+      interval = { lo: at(lo), hi: at(hi), mean: at(mean), zero: at(0) };
+    }
+    return { bars: bars, interval: interval };
+  }
+
+  /* One record into what its card says. `status` is null when the record is not one this page knows, and
+   * then the card says only that. */
+  function describe(record) {
+    var ok = record !== null && typeof record === "object" && !Array.isArray(record) && own(STATUS_TEXT, record.status);
+    if (!ok) return { status: null, title: "Run", sentence: "This run's record could not be read.", pending: false, score: null, unreadable: false };
+    var out = { status: record.status, title: STATUS_TEXT[record.status][0], sentence: STATUS_TEXT[record.status][1],
+                pending: record.status === "pending", score: null, unreadable: false };
+    if (record.status !== "completed") return out;
+    var s = readScore(record.score);
+    if (!s) { out.unreadable = true; out.sentence = UNREADABLE; return out; }
+    out.score = {
+      klass: SCORE_CLASSES[s.evidence_class],
+      disclosure: s.disclosure,
+      name: SCORE_NAMES[s.name],
+      candidate: four(s.candidate_mean),
+      baseline: four(s.baseline_mean),
+      difference: DIFFERENCE[0] + four(s.difference_mean) + DIFFERENCE[1] + four(s.difference_lo) + DIFFERENCE[2] +
+        four(s.difference_hi) + DIFFERENCE[3],
+      lo: four(s.difference_lo),
+      hi: four(s.difference_hi),
+      direction: SCORE_DIRECTIONS[s.direction],
+      counts: COUNTS[0] + s.n_rows + COUNTS[1] + s.n_events + COUNTS[2],
+      chart: chart(s)
+    };
+    return out;
+  }
+
+  /* The reason sentence of one record, or null: a refused or not-evaluated run whose reason_code is in the
+   * closed table for that status. Anything else is null, never a guess. */
+  function reasonSentence(record) {
+    if (record === null || typeof record !== "object" || Array.isArray(record)) return null;
+    if (!own(REASON_TEXT, record.status)) return null;
+    var table = REASON_TEXT[record.status];
+    return own(table, record.reason_code) ? table[record.reason_code] : null;
+  }
+
+  /* `describe`, with the reason sentence in place of the status sentence when there is one. A page opts in by
+   * calling this instead of `describe`; an unknown code leaves `describe`'s answer as it is. */
+  function describeWithReason(record) {
+    var out = describe(record);
+    var why = reasonSentence(record);
+    if (why !== null && out.status !== null) { out.sentence = why; out.reason = true; }
+    return out;
+  }
+
+  /* A composable model (`tcl-model-spec/1`, specs/model-spec-js.md) in words, or null. This file is inlined on
+   * its own and imports nothing, so the validator and its wording are another script's: model_spec.js, which a
+   * page inlines AHEAD of this one when it shows such models. Without it there is no validator here, so nothing is
+   * said. The words are that script's and are never built here. */
+  function specWords(content) {
+    var spec = typeof TclModelSpec === "object" && TclModelSpec !== null ? TclModelSpec : null;
+    if (spec === null || typeof spec.modelWords !== "function") return null;
+    var words = spec.modelWords(content);
+    return typeof words === "string" && words !== "" ? words : null;
+  }
+
+  /* A saved version's bytes in words, or null. Two schemas. The first, read strictly here: a list of plain names
+   * and a penalty. The second is specWords'. Anything else says nothing rather than something wrong. */
+  function modelWords(content) {
+    var doc;
+    try { doc = JSON.parse(content); } catch (e) { return null; }
+    if (doc && typeof doc === "object" && doc.schema === "tcl-model-spec/1") return specWords(content);
+    if (!doc || typeof doc !== "object" || doc.schema !== "journey0-param-model/1" || doc.kind !== "logit_l2") return null;
+    if (!Array.isArray(doc.features) || !doc.features.length || typeof doc.l2 !== "string" || !/^[0-9.]{1,8}$/.test(doc.l2)) return null;
+    if (!doc.features.every(function (f) { return typeof f === "string" && /^[a-z][a-z0-9_]{0,31}$/.test(f); })) return null;
+    var names = doc.features.length === 1 ? doc.features[0]
+      : doc.features.slice(0, -1).join(", ") + " and " + doc.features[doc.features.length - 1];
+    return "Logistic regression on " + names + ", penalty " + doc.l2;
+  }
+
+  /* api.thread_runs' rows that are runs: a run reference, and a record for that same run. Anything else is
+   * left out, never guessed at. */
+  function runsOf(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(function (row) {
+      var rec = row && row.record;
+      return !!row && UUID.test(row.run_ref) && !!rec && typeof rec === "object" && !Array.isArray(rec) && rec.run_ref === row.run_ref;
+    });
+  }
+
+  /* A message id as the page writes it on a line (`data-message`), or null. Ids are whole numbers; anything
+   * else names no line. */
+  function lineId(id) {
+    if (typeof id === "number") return Math.floor(id) === id && id >= 0 && isFinite(id) ? String(id) : null;
+    return typeof id === "string" && /^[0-9]{1,18}$/.test(id) ? id : null;
+  }
+
+  /* api.thread_contexts' rows and the page's threads into the left column's order: each Investigation, in
+   * the order its first conversation appears, with its conversations; then the rest. No contexts, no
+   * groups: the list is today's. */
+  function group(threads, contexts) {
+    var by = Object.create(null);                 /* no inherited keys: a thread id is data, whatever it spells */
+    (Array.isArray(contexts) ? contexts : []).forEach(function (c) {
+      if (c && UUID.test(c.thread_id) && UUID.test(c.investigation_id) && typeof c.title === "string" && c.title !== "") by[c.thread_id] = c;
+    });
+    var groups = [], at = Object.create(null), rest = [];
+    (threads || []).forEach(function (t) {
+      var c = t && by[t.id];
+      if (!c) { rest.push(t); return; }
+      if (at[c.investigation_id] === undefined) { at[c.investigation_id] = groups.length; groups.push({ investigation_id: c.investigation_id, title: c.title, threads: [] }); }
+      groups[at[c.investigation_id]].threads.push(t);
+    });
+    return { groups: groups, rest: rest };
+  }
+
+  return { STATUSES: STATUSES, STATUS_TEXT: STATUS_TEXT, SCORE_KEYS: SCORE_KEYS, SCORE_CLASSES: SCORE_CLASSES, SCORE_NAMES: SCORE_NAMES,
+           SCORE_DIRECTIONS: SCORE_DIRECTIONS, UNREADABLE: UNREADABLE, LABELS: LABELS, DIFFERENCE: DIFFERENCE, COUNTS: COUNTS,
+           PENDING_GAVE_UP: PENDING_GAVE_UP, readScore: readScore, chart: chart, describe: describe,
+           modelWords: modelWords, runsOf: runsOf, lineId: lineId, group: group,
+           REASON_TEXT: REASON_TEXT, reasonSentence: reasonSentence, describeWithReason: describeWithReason };
+})();
+
+</script>
+<script>
 /* No authenticated content paints while the sign-in navigation is pending. */
 if (!TclSession.load()) { document.documentElement.hidden = true; location.replace(SIGNIN_URL); }
 </script>
@@ -279,6 +503,58 @@ form.create input:focus { border-color: var(--accent); }
            padding: 10px 18px; border-radius: 4px; font-weight: 600; }
 .primary:hover { background: #8bedfa; }
 .disclaimer { color: var(--muted); font-size: 11px; margin-top: 16px; }
+.timeline { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px 28px; margin: 0 0 34px; }
+.timeline-main { flex: 999 1 520px; min-width: 0; max-width: 880px; }
+.timeline p { color: var(--primary); max-width: none; margin: 0; }
+.timeline .label, .timeline .timeline-note { color: var(--muted); }
+.timeline .timeline-note { margin: 0 0 14px; }
+.timeline-entries { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.timeline-entry { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 14px 16px;
+                  display: grid; gap: 8px; min-width: 0; }
+.timeline-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 14px; }
+.timeline-when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.timeline .timeline-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.timeline .timeline-sentence { overflow-wrap: anywhere; }
+.timeline-links { display: flex; flex-wrap: wrap; gap: 6px 20px; }
+.timeline-aside { flex: 1 1 240px; max-width: 420px; background: var(--panel); border: 1px solid var(--rule);
+                  border-radius: 5px; padding: 14px 16px; display: grid; gap: 14px; }
+.timeline-standing { margin: 0; display: grid; gap: 12px; }
+.timeline-standing dt { color: var(--muted); font-size: 12px; }
+.timeline-standing dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.timeline-continue { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px;
+                     background: var(--accent); color: var(--page); border: 1px solid var(--accent); border-radius: 4px;
+                     font-weight: 600; text-decoration: none; }
+.timeline-continue:hover { background: #8bedfa; }
+.timeline .run-card { display: grid; gap: 10px; min-width: 0; }
+.timeline .run-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.timeline .run-chip { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--rule);
+                      border-radius: 3px; padding: 1px 6px; color: var(--muted); }
+.timeline .run-chip.completed, .timeline .run-chip.pending { color: var(--accent); border-color: var(--accent); }
+.timeline .run-chip.refused { color: var(--bad); border-color: var(--bad); }
+.timeline .run-chip.not_evaluated, .timeline .run-chip.klass { color: var(--margin); border-color: var(--margin); }
+.timeline .run-chip.lost { border-style: dashed; }
+.timeline .run-model, .timeline .run-sentence, .timeline .run-counts, .timeline .run-axis-note,
+.timeline .run-score-name { font-size: 12px; color: var(--muted); }
+.timeline .run-disclosure { font-size: 13px; }
+.timeline .run-score { margin: 0; max-width: none; border: 1px solid var(--rule); border-radius: 5px; background: var(--page);
+                       padding: 12px 14px; display: grid; gap: 10px; }
+.timeline .run-score p { margin: 0; }
+.timeline .run-bar { display: flex; align-items: center; gap: 12px; }
+.timeline .run-bar-label { flex: 0 0 150px; }
+.timeline .run-bar-track { flex: 1; height: 16px; background: var(--surface); border-radius: 2px; display: flex; min-width: 40px; }
+.timeline .run-bar-fill { border-radius: 2px; background: #5d5d68; }
+.timeline .run-bar-fill.candidate { background: var(--accent); }
+.timeline .run-bar-value { flex: 0 0 56px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.timeline .run-interval { position: relative; height: 62px; font-size: 12px; }
+.timeline .run-interval > * { position: absolute; }
+.timeline .run-interval .axis { left: 0; right: 0; top: 20px; height: 1px; background: var(--rule); }
+.timeline .run-interval .band { top: 15px; height: 11px; background: rgba(34, 211, 238, .35); border-radius: 2px; }
+.timeline .run-interval .mean { top: 9px; width: 3px; height: 23px; margin-left: -1px; background: var(--accent); }
+.timeline .run-interval .zero { top: 4px; width: 1px; height: 33px; background: var(--primary); }
+.timeline .run-interval .lo { top: 28px; transform: translateX(-100%); padding-right: 6px; color: var(--muted); }
+.timeline .run-interval .hi { top: 28px; padding-left: 6px; color: var(--muted); }
+.timeline .run-interval .nought { top: 44px; transform: translateX(-50%); }
+@media (max-width: 840px) { .timeline .run-bar-label { flex-basis: 96px; } }
 @media (max-width: 840px) {
   .shell { display: block; }
   .rail { border-right: 0; border-bottom: 1px solid var(--rule); }
@@ -415,6 +691,19 @@ form.create input:focus { border-color: var(--accent); }
           <button type="button" id="tab-runs" data-tab="runs" aria-selected="false" hidden>Runs</button>
         </nav>
         <div class="pane" id="pane-overview">
+          <div id="timeline" class="timeline" data-testid="investigation-timeline">
+            <div class="timeline-main">
+              <h2>What happened, in order</h2>
+              <p id="timeline-note" class="timeline-note" data-testid="timeline-note"></p>
+              <ol id="timeline-entries" class="timeline-entries" data-testid="timeline-entries"></ol>
+            </div>
+            <aside id="timeline-aside" class="timeline-aside" aria-label="Where it stands" data-testid="timeline-standing" hidden>
+              <p class="label">Where it stands</p>
+              <dl id="timeline-standing" class="timeline-standing"></dl>
+              <a id="timeline-continue" class="timeline-continue" href="/terminal.html" referrerpolicy="no-referrer"
+                 data-testid="timeline-continue" hidden>Continue in the terminal</a>
+            </aside>
+          </div>
           <h2>Research starts with a question</h2>
           <p>Explore live odds, NFL statistics and play-by-play with the terminal under Conversation or Data. A conversation becomes part of this Investigation only when you reference it here.</p>
           <div class="callout"><strong>Context is deliberate.</strong> Opening an Investigation does not attach an earlier thread or make it the active conversation.</div>
@@ -864,6 +1153,7 @@ form.create input:focus { border-color: var(--accent); }
       ? "Choose a reference to read its saved history. Reading is not a work-within selection."
       : "No referenced conversations yet.";
     renderThreadChoices();
+    timelinePaint();
   }
   function threadFromUrl() { return new URL(location.href).searchParams.get("thread"); }
   function setThreadUrl(id) {
@@ -939,6 +1229,7 @@ form.create input:focus { border-color: var(--accent); }
       [, refs] = await Promise.all([loadOwnedThreads(), investigationApi.references(id)]);
     } catch (cause) {
       if (current?.id === id) $("reference-count").textContent = "Not loaded";
+      if (current?.id === id) timelineUnread();
       throw cause;
     }
     if (current?.id !== id || (epoch !== undefined && epoch !== requestEpoch)) return;
@@ -950,6 +1241,7 @@ form.create input:focus { border-color: var(--accent); }
     viewedThreadId = null;
     $("history").textContent = "";
     renderReferences();
+    timelineRuns();
     const requested = threadFromUrl();
     if (requested && references.some((row) => row.thread_id === requested)) {
       showTab("conversation", false);
@@ -1043,6 +1335,7 @@ form.create input:focus { border-color: var(--accent); }
     $("thread-note").textContent = "";
     $("reference-count").textContent = "Loading…";
     renderThreadChoices();
+    timelineReset();
     $("heading").textContent = titleOf(record);
     setCrumb(titleOf(record));
     $("lede").textContent = "A durable place to explore this question and return to it.";
@@ -1599,6 +1892,7 @@ form.create input:focus { border-color: var(--accent); }
       rememberRun(result.run_ref, { notStarted: notStarted });
       setRunUrl(result.run_ref);
       await openRun(result.run_ref);
+      timelineRuns();
       status(notStarted ? "The run could not be started. It will be recorded as lost at its deadline."
         : result.status === "replay" ? "This start was already accepted. Showing that run."
         : result.status === "unconfirmed" ? "The run was started, but the service's answer was lost. Its state shows here."
@@ -1684,6 +1978,13 @@ form.create input:focus { border-color: var(--accent); }
     $("run-status").textContent = label;
     $("run-status-text").textContent = known && known.notStarted && row.status === "pending"
       ? "This run was not started: the service did not release it. It will be recorded as lost at its deadline." : text;
+    // Why nothing was compared, when the record carries a reason TclRun has a sentence for (api.run_record's
+    // reason_code, migration 024; specs/render-modes.md section 3). The table is run_card.js's, the one the
+    // timeline's card and the terminal read, so one run says one thing in all three places. The sentence takes
+    // the status sentence's place, because that one says the reason is not shown. No reason_code, a code that is
+    // not in the table, or any status but refused and not evaluated: null, and the pane is drawn as it was.
+    const why = TclRun.reasonSentence(row);
+    if (why !== null) $("run-status-text").textContent = why;
     $("run-ref-read").textContent = row.run_ref.slice(0, 8);
     $("run-version-read").textContent = idPattern.test(row.source_version_id || "") ? versionLabel(row.source_version_id) : "—";
     $("run-fixture-read").textContent = row.fixture && typeof row.fixture.id === "string"
@@ -1733,6 +2034,342 @@ form.create input:focus { border-color: var(--accent); }
       report(cause);
     }
   }
+  // ---------- The Investigation read in order (specs/investigation-timeline.md) ----------
+  // One list, oldest first, of what happened in the open Investigation: it was created, a conversation was
+  // added, a conversation was set to work in it, a model version was saved, a run was started. Everything is
+  // read with the owner's session through readers this page already calls, plus api.investigation_runs (023).
+  // What a run's record says is TclRun's (run_card.js); this only places it, as paintRun does on the terminal.
+  // This block is a comment in the template file and is live only in a render with the timeline flag on, so it
+  // holds line comments only.
+  const TIMELINE_POLL_MS = 5000;
+  const TIMELINE_POLL_MAX = 40;
+  // PostgREST cuts any answer at this many rows without saying so; a list this long is not numbered.
+  const TIMELINE_ROW_CAP = 1000;
+  // The pending sentence promises another read. Once this page has stopped reading, it says this instead.
+  const TIMELINE_GAVE_UP = "The run has started. Its result is not recorded yet. Choose Reload saved record to check again.";
+  const TIMELINE_LATEST_RUN = Object.freeze({ pending: " is pending.", completed: " completed.", refused: " was refused.",
+    not_evaluated: " was not evaluated.", lost: " was lost." });
+  // runs: "unread", "ready", "missing" (no reader on this server) or "failed" (a read that is not a missing reader).
+  const timeline = { forId: null, rows: null, runs: "unread", cut: false, failed: false, epoch: 0, timer: null, polls: 0, seen: "" };
+  // A missing reader is asked for once per page load, and the page then says nothing about runs here.
+  let timelineRunsMissing = false;
+  const timelineWords = new Map();
+  // The page's general introduction, shown until the Investigation has a conversation.
+  const timelineIntro = Array.from($("pane-overview").children)
+    .filter((node) => node.id !== "timeline" && !node.classList.contains("actions"));
+  function tlNode(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+  function tlTime(value) {
+    const at = typeof value === "string" ? Date.parse(value) : NaN;
+    return isNaN(at) ? Infinity : at;
+  }
+  function tlCount(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  function tlQuoted(threadId) { return "“" + nameOfThread(threadId) + "”"; }
+  function timelineStop() {
+    timeline.epoch += 1;
+    if (timeline.timer !== null) { clearTimeout(timeline.timer); timeline.timer = null; }
+  }
+  // An Investigation was opened or reloaded. Another Investigation's runs are never shown under this one.
+  function timelineReset() {
+    timelineStop();
+    if (timeline.forId !== current.id) { timeline.rows = null; timeline.runs = "unread"; timeline.cut = false; timeline.seen = ""; }
+    timeline.forId = current.id;
+    timeline.failed = false;
+    timeline.polls = 0;
+    timelinePaint();
+  }
+  function timelineUnread() { timeline.failed = true; timelinePaint(); }
+  // A saved version in words, or null while it is unread or not readable. One read per version per page load.
+  function timelineModel(versionId) {
+    if (typeof versionId !== "string" || !idPattern.test(versionId)) return null;
+    if (!timelineWords.has(versionId)) {
+      timelineWords.set(versionId, null);
+      versionApi.get(versionId)
+        .then((row) => (row ? TclRun.modelWords(row.content) : null))
+        .catch(() => null)
+        .then((words) => {
+          if (!words) return;
+          timelineWords.set(versionId, words);
+          if (current && current.id === timeline.forId) timelinePaint();
+        });
+    }
+    return timelineWords.get(versionId);
+  }
+  function timelineVersionNumber(versionId) {
+    if (versionsState !== "ready" || versions.length >= TIMELINE_ROW_CAP) return null;
+    const index = versions.findIndex((row) => row.version_id === versionId);
+    return index < 0 ? null : versions.length - index;
+  }
+  // A Model Version belongs to its owner, not to an Investigation. It is listed here when a run in this
+  // Investigation used it, or when it was saved at or after the moment this Investigation was created.
+  function timelineEntries() {
+    const entries = [{ kind: "created", at: current.created_at, rank: 0 }];
+    references.forEach((reference) => {
+      entries.push({ kind: "conversation", at: reference.created_at, rank: 1, threadId: reference.thread_id });
+      const selection = selectionsReady && selectedHere(reference) ? selections.get(reference.thread_id) : null;
+      if (selection) entries.push({ kind: "working", at: selection.created_at, rank: 2, threadId: reference.thread_id });
+    });
+    const rows = timeline.rows || [];
+    const usedHere = new Set(rows.map((row) => row.record.source_version_id));
+    const since = tlTime(current.created_at);
+    (versionsState === "ready" ? versions.slice().reverse() : []).forEach((version) => {
+      const used = usedHere.has(version.version_id);
+      if (!used && !(tlTime(version.created_at) >= since)) return;
+      entries.push({ kind: "version", at: version.created_at, rank: 3, versionId: version.version_id, used: used,
+                     number: timelineVersionNumber(version.version_id) });
+    });
+    rows.slice().reverse().forEach((row, index) => {
+      entries.push({ kind: "run", at: row.created_at, rank: 4, row: row, number: timeline.cut ? null : index + 1 });
+    });
+    return entries.map((entry, index) => [entry, index])
+      .sort((a, b) => (tlTime(a[0].at) - tlTime(b[0].at)) || (a[0].rank - b[0].rank) || (a[1] - b[1]))
+      .map((pair) => pair[0]);
+  }
+  function timelineLabel(entry) {
+    if (entry.kind === "created") return "Investigation";
+    if (entry.kind === "conversation" || entry.kind === "working") return "Conversation";
+    if (entry.kind === "version") return "Model version" + (entry.number ? " " + entry.number : "");
+    const of = timelineVersionNumber(entry.row.record.source_version_id);
+    return "Run" + (entry.number ? " " + entry.number : "") + (of ? ", of model version " + of : "");
+  }
+  // The two ways from a conversation's entry to the conversation: its saved history on this page, and the
+  // terminal. The terminal is given the conversation in a fragment, which no server and no Referer receives;
+  // it is never given this Investigation.
+  function timelineLinks(threadId) {
+    const links = tlNode("div", "timeline-links");
+    const read = tlNode("a", "textlink", "Read it here");
+    read.href = "?id=" + encodeURIComponent(current.id) + "&thread=" + encodeURIComponent(threadId);
+    read.dataset.testid = "timeline-read";
+    read.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (busy) return undefined;
+      showTab("conversation", false);
+      return viewThread(threadId).then((shown) => {
+        if (shown && typeof $("history").scrollIntoView === "function") $("history").scrollIntoView({ block: "start" });
+      });
+    });
+    const go = tlNode("a", "textlink", "Continue in the terminal →");
+    go.href = "/terminal.html#thread=" + encodeURIComponent(threadId);
+    go.setAttribute("referrerpolicy", "no-referrer");
+    go.dataset.testid = "timeline-terminal";
+    links.append(read, go);
+    return links;
+  }
+  // A run's card, as the terminal draws it. Never a figure without its class and disclosure: the class is in
+  // the head, the disclosure is the next line and the figures follow, all from one record, and a score that
+  // cannot be read draws no figure. Every value is set with textContent. A refused or not-evaluated run whose
+  // record carries a known reason says it in place of the status sentence (describeWithReason); any other record
+  // gets describe's answer unchanged.
+  function timelineRunCard(row) {
+    const record = row.record;
+    const d = TclRun.describeWithReason(record);
+    if (d.pending && timeline.polls >= TIMELINE_POLL_MAX) d.sentence = TIMELINE_GAVE_UP;
+    const card = tlNode("div", "run-card");
+    card.dataset.testid = "timeline-run";
+    card.setAttribute("data-run", row.run_ref);
+    card.setAttribute("data-status", d.status || "unread");
+    const head = tlNode("div", "run-card-head");
+    head.appendChild(tlNode("span", "run-chip " + (d.status || "unread"), d.title));
+    if (d.score) head.appendChild(tlNode("span", "run-chip klass", d.score.klass));
+    const words = timelineModel(record.source_version_id);
+    if (words) head.appendChild(tlNode("span", "run-model", words));
+    card.appendChild(head);
+    card.appendChild(tlNode("p", "run-sentence", d.sentence));
+    if (!d.score) return card;
+    card.appendChild(tlNode("p", "run-disclosure", d.score.disclosure));
+    const box = tlNode("div", "run-score");
+    box.appendChild(tlNode("p", "run-score-name", d.score.name));
+    [[TclRun.LABELS.candidate, d.score.candidate, "candidate"], [TclRun.LABELS.baseline, d.score.baseline, "baseline"]].forEach((b) => {
+      const bar = tlNode("div", "run-bar");
+      bar.setAttribute("data-bar", b[2]);
+      bar.appendChild(tlNode("span", "run-bar-label", b[0]));
+      if (d.score.chart.bars) {
+        const track = tlNode("span", "run-bar-track");
+        const fill = tlNode("span", "run-bar-fill " + b[2]);
+        fill.style.width = d.score.chart.bars[b[2]].toFixed(2) + "%";
+        track.appendChild(fill);
+        bar.appendChild(track);
+      }
+      bar.appendChild(tlNode("span", "run-bar-value", b[1]));
+      box.appendChild(bar);
+    });
+    box.appendChild(tlNode("p", "run-difference", d.score.difference));
+    const iv = d.score.chart.interval;
+    if (iv) {
+      const strip = tlNode("div", "run-interval");
+      const at = (className, left, text) => {
+        const el = tlNode("div", className, text);
+        el.style.left = left.toFixed(2) + "%";
+        strip.appendChild(el);
+        return el;
+      };
+      strip.appendChild(tlNode("div", "axis"));
+      at("band", iv.lo).style.width = (iv.hi - iv.lo).toFixed(2) + "%";
+      at("mean", iv.mean);
+      at("zero", iv.zero);
+      at("lo", iv.lo, d.score.lo);
+      at("hi", iv.hi, d.score.hi);
+      at("nought", iv.zero, "0");
+      box.appendChild(strip);
+      box.appendChild(tlNode("p", "run-axis-note", "Left of 0, your model scored lower (better). At 0 there is no difference."));
+    }
+    card.appendChild(box);
+    card.appendChild(tlNode("p", "run-direction", d.score.direction));
+    card.appendChild(tlNode("p", "run-counts", d.score.counts));
+    return card;
+  }
+  function timelineEntry(entry, place) {
+    const li = tlNode("li", "timeline-entry");
+    li.dataset.testid = "timeline-entry";
+    li.dataset.kind = entry.kind;
+    const head = tlNode("div", "timeline-head");
+    head.append(tlNode("span", "label", place + " · " + timelineLabel(entry)),
+                tlNode("span", "timeline-when", stamp(entry.at, 16) + " UTC"));
+    li.appendChild(head);
+    if (entry.kind === "created") {
+      li.appendChild(tlNode("p", "timeline-sentence", "You created this Investigation."));
+    } else if (entry.kind === "conversation") {
+      li.appendChild(tlNode("p", "timeline-sentence", "You added the conversation " + tlQuoted(entry.threadId) + " to this Investigation."));
+      li.appendChild(timelineLinks(entry.threadId));
+    } else if (entry.kind === "working") {
+      li.appendChild(tlNode("p", "timeline-sentence", tlQuoted(entry.threadId) + " was set to work in this Investigation. A run can be started from it."));
+    } else if (entry.kind === "version") {
+      li.appendChild(tlNode("p", "timeline-title", timelineModel(entry.versionId) || "A saved model version"));
+      li.appendChild(tlNode("p", "timeline-sentence", "You saved this model version."
+        + (timeline.runs === "ready" && !entry.used ? " It has not been run in this Investigation." : "")));
+    } else {
+      const of = timelineVersionNumber(entry.row.record.source_version_id);
+      li.appendChild(tlNode("p", "timeline-sentence", "You started a run of " + (of ? "model version " + of : "a saved model version")
+        + " from the conversation " + tlQuoted(entry.row.thread_id) + "."));
+      li.appendChild(timelineRunCard(entry.row));
+    }
+    return li;
+  }
+  function timelineLatest(entry) {
+    if (entry.kind === "created") return "This Investigation was created. Nothing has been added to it yet.";
+    if (entry.kind === "conversation") return "The conversation " + tlQuoted(entry.threadId) + " was added.";
+    if (entry.kind === "working") return tlQuoted(entry.threadId) + " was set to work here.";
+    if (entry.kind === "version") return (entry.number ? "Model version " + entry.number : "A model version") + " was saved.";
+    const status = TclRun.describe(entry.row.record).status;
+    return (entry.number ? "Run " + entry.number : "The newest run") + (status ? TIMELINE_LATEST_RUN[status] : " could not be read.");
+  }
+  // Completed runs counted by evidence class. No figure is shown here: a figure belongs in its run's card,
+  // beside its class and its disclosure.
+  function timelineEvidence() {
+    const classes = new Map();
+    let completed = 0;
+    let readable = 0;
+    (timeline.rows || []).forEach((row) => {
+      const d = TclRun.describe(row.record);
+      if (d.status !== "completed") return;
+      completed += 1;
+      if (!d.score) return;
+      readable += 1;
+      classes.set(d.score.klass, (classes.get(d.score.klass) || 0) + 1);
+    });
+    if (!completed) return "No completed run yet.";
+    const parts = Array.from(classes.entries()).map((pair) => pair[0] + ": " + tlCount(pair[1], "run", "runs") + ".");
+    if (completed > readable) parts.push(tlCount(completed - readable, "completed run has", "completed runs have") + " no readable score.");
+    parts.push("A provisional run supports no decision.");
+    return parts.join(" ");
+  }
+  function timelineStanding(entries) {
+    const dl = $("timeline-standing");
+    dl.textContent = "";
+    const add = (term, text) => {
+      const row = tlNode("div");
+      row.append(tlNode("dt", "", term), tlNode("dd", "", text));
+      dl.appendChild(row);
+    };
+    add("Latest", timelineLatest(entries[entries.length - 1]));
+    const working = selectionsReady ? references.filter(selectedHere) : [];
+    add("Working here", !selectionsReady ? "Not read."
+      : working.length ? working.map((reference) => nameOfThread(reference.thread_id)).join("; ")
+      : "No conversation is set to work in this Investigation.");
+    if (timeline.runs === "ready") add("Evidence so far", timelineEvidence());
+    const newest = working.slice().sort((a, b) => tlTime(selections.get(b.thread_id).created_at)
+      - tlTime(selections.get(a.thread_id).created_at))[0];
+    $("timeline-continue").hidden = !newest;
+    $("timeline-continue").href = "/terminal.html" + (newest ? "#thread=" + encodeURIComponent(newest.thread_id) : "");
+    $("timeline-aside").hidden = false;
+  }
+  function timelinePaint() {
+    if (!current) return;
+    const list = $("timeline-entries");
+    const note = $("timeline-note");
+    list.textContent = "";
+    if (!referencesReady) {
+      note.textContent = timeline.failed
+        ? "This Investigation's conversations could not be read, so what happened in it is not listed."
+        : "Reading this Investigation…";
+      note.hidden = false;
+      $("timeline-aside").hidden = true;
+      timelineIntro.forEach((node) => { node.hidden = false; });
+      return;
+    }
+    const entries = timelineEntries();
+    entries.forEach((entry, index) => list.appendChild(timelineEntry(entry, index + 1)));
+    note.textContent = timeline.runs === "failed" ? "This Investigation's runs could not be read, so none are listed here."
+      : timeline.runs === "ready" && timeline.cut ? "Only the newest " + TIMELINE_ROW_CAP + " runs are listed, so runs are not numbered." : "";
+    note.hidden = !note.textContent;
+    timelineStanding(entries);
+    const counts = [tlCount(references.length, "conversation", "conversations")];
+    if (versionsState === "ready") {
+      counts.push(tlCount(entries.filter((entry) => entry.kind === "version").length, "model version", "model versions"));
+    }
+    if (timeline.runs === "ready") counts.push(tlCount(timeline.rows.length, "run", "runs"));
+    // The line under the title belongs to whichever view is on screen; a redraw behind another view leaves it.
+    if (view === "detail-view") $("lede").textContent = counts.join(", ") + ".";
+    timelineIntro.forEach((node) => { node.hidden = references.length > 0; });
+  }
+  // This Investigation's runs, newest first, each with api.run_record's own answer. Read again every 5 s while
+  // one is pending, and drawn again only when the answer changed.
+  async function timelineRuns(polls) {
+    if (!current) return;
+    const id = current.id;
+    timelineStop();
+    const epoch = timeline.epoch;
+    timeline.polls = typeof polls === "number" ? polls : 0;
+    if (timelineRunsMissing) { timeline.runs = "missing"; return; }
+    let rows = null;
+    let failure = null;
+    try { rows = await rpc("investigation_runs", { p_investigation_id: id }, "Run"); }
+    catch (cause) { failure = cause; }
+    if (current?.id !== id || epoch !== timeline.epoch) return;
+    if (failure && failure.kind === "auth") { report(failure); return; }
+    if (failure && failure.kind === "unavailable") {
+      // No reader on this server (a database before 023). Not an error: the page says nothing about runs here.
+      timelineRunsMissing = true;
+      timeline.rows = null;
+      timeline.runs = "missing";
+    } else if (failure || !Array.isArray(rows)) {
+      // Not a missing reader. What was read before stays; with nothing read, the list says so.
+      if (!timeline.rows) timeline.runs = "failed";
+    } else {
+      timeline.rows = TclRun.runsOf(rows).filter((row) => idPattern.test(row.thread_id) && typeof row.created_at === "string");
+      timeline.cut = rows.length >= TIMELINE_ROW_CAP;
+      timeline.runs = "ready";
+    }
+    const pending = (timeline.rows || []).some((row) => row.record.status === "pending");
+    const more = pending && timeline.polls < TIMELINE_POLL_MAX;
+    const seen = JSON.stringify([timeline.runs, timeline.rows, timeline.cut, pending && !more]);
+    if (seen !== timeline.seen) { timeline.seen = seen; timelinePaint(); }
+    if (more) {
+      timeline.timer = setTimeout(() => {
+        timeline.timer = null;
+        return current?.id === id && epoch === timeline.epoch ? timelineRuns(timeline.polls + 1) : undefined;
+      }, TIMELINE_POLL_MS);
+    }
+  }
+  window.__investigationTimeline = Object.freeze({
+    state: () => ({ forId: timeline.forId, runs: timeline.runs, polls: timeline.polls, polling: timeline.timer !== null,
+                    runRefs: (timeline.rows || []).map((row) => row.run_ref),
+                    entries: Array.from($("timeline-entries").children).map((node) => node.dataset.kind) })
+  });
   function startCreate() {
     if (!enabled || busy || listState === "failed") return;
     $("heading").textContent = "New investigation";

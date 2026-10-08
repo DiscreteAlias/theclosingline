@@ -287,6 +287,26 @@ var TclSession = (function () {
   .keep-status { font-size: 12px; color: var(--muted); min-height: 1.4em; }
   .keep-status.bad { color: var(--bad); }
   .keep-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* A proposed model (specs/model-proposal.md): put in only by terminal.render(propose=True). The card sits in
+     its answer, which is pre-wrap; the card is not. Chips are the run card's. */
+  .proposal { margin: 10px 0 0; padding: 14px; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface);
+              white-space: normal; display: flex; flex-direction: column; gap: 12px; }
+  .proposal > * { margin: 0; }
+  .proposal[data-state="started"] { border-color: var(--accent); }
+  .proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .run-chip.proposal-chip { color: var(--accent); border-color: var(--accent); }
+  .proposal-title { font-size: 18px; font-weight: 600; }
+  .proposal-rows { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
+  .proposal-row { display: flex; flex-wrap: wrap; gap: 2px 16px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .proposal-key { flex: 0 0 130px; color: var(--muted); }
+  .proposal-val { flex: 1 1 300px; display: flex; flex-direction: column; gap: 2px; }
+  .proposal-note, .proposal-records { font-size: 12px; color: var(--muted); }
+  .proposal-records { color: var(--primary); }
+  .proposal-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .proposal-actions button { min-height: 44px; padding: 0 20px; }
+  .proposal-status { font-size: 12px; color: var(--muted); }
+  .proposal-status:empty { display: none; }
+  .proposal-status.bad { color: var(--bad); }
   .msg { max-width: 820px; margin: 0 0 14px; padding: 10px 14px; border-radius: 6px; white-space: pre-wrap;
          overflow-wrap: anywhere; }
   .msg.user { background: var(--surface); border: 1px solid var(--rule); }
@@ -2990,6 +3010,236 @@ var TclKeep = (function () {
 
 </script>
 <script>
+/* realdata/closingline/propose_flow.js, inlined verbatim: reading a proposed model and the click that saves
+ * and runs it, with no DOM in it. deploy-supabase/supabase/functions/terminal/propose_check.mjs evaluates the
+ * file's own bytes. */
+/* The Closing Line — a proposed model: reading one, and the click that saves and runs it, with no DOM in it.
+ *
+ * specs/model-proposal.md. The assistant's `propose_model` tool saves nothing and runs nothing. The page reads
+ * the tool's stored input HERE, with the save act's own rules (014's research.journey0_param_model_ok) and the
+ * inputs the run's fixture has, and builds the bytes itself, exactly as the workspace form builds them
+ * (canonicalVersion in templates/investigations.html). Nothing the function says decides the bytes.
+ *
+ * ONE CLICK RECORDS TWO EXISTING ACTS, in order, each with its own idempotency key: api.save_model_version (014)
+ * and the run-start function (017, 018). They are two transactions, and the card says so. What makes that safe
+ * is the ATTEMPT, as in keep_flow.js: the conversation, the answer, the owner, the bytes, both keys and each
+ * answered step, written to storage before the first request and after each answered step. A save that was
+ * answered is never sent again; a start whose outcome is unknown is sent again with the SAME key, which replays.
+ *
+ * THE RULES ARE HELD TWICE: here and in the terminal function's proposeModel (terminal_core.js). vendor.js is
+ * generated and pinned, so they are not shared by import; deploy-supabase/supabase/functions/terminal/
+ * propose_check.mjs evaluates these bytes and holds the two equal on a table of cases.
+ *
+ * This file calls nothing by itself: `run` is handed the page's own `api(name, body)` and `start(body)`.
+ */
+var TclPropose = (function () {
+  "use strict";
+
+  var TOOL = "propose_model";
+  var SCHEMA = "journey0-param-model/1";
+  var KIND = "logit_l2";
+  var L2 = ["0.1", "0.5", "1", "2", "5"];             /* 014's menu, as text */
+  var INPUTS = ["late", "mkt", "sig"];                /* verification/journey0/fixture.py, journey0-synthetic */
+  var MAX_INPUTS = 8;
+  var REASON_MAX = 240;
+  var NAME = /^[a-z][a-z0-9_]{0,31}$/;
+  var FIXTURE_ID = "journey0-synthetic";              /* what the workspace page's Runs tab sends */
+  var FIXTURE_VERSION = 2;
+  var STORE_PREFIX = "tcl.propose.";
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  var MESSAGE = /^[0-9]{1,18}$/;
+  var OUTCOMES = ["started", "not_started"];
+
+  function canonical(features, l2) {
+    return '{"features":[' + features.slice().sort().map(function (name) { return '"' + name + '"'; }).join(",") +
+      '],"kind":"' + KIND + '","l2":"' + l2 + '","schema":"' + SCHEMA + '"}';
+  }
+
+  /* A proposal's input, as the tool was given it or as the function echoed it: the names sorted, the reason on
+   * one line and the bytes, or null. Any rule broken reads as no proposal, never as a nearby one. Arrays and
+   * indexOf throughout: a plain object would let "constructor" through. */
+  function read(input) {
+    if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+    var features = input.features;
+    if (!Array.isArray(features) || features.length < 1 || features.length > MAX_INPUTS) return null;
+    for (var i = 0; i < features.length; i += 1) {
+      var name = features[i];
+      if (typeof name !== "string" || !NAME.test(name) || INPUTS.indexOf(name) === -1 || features.indexOf(name) !== i) return null;
+    }
+    if (typeof input.l2 !== "string" || L2.indexOf(input.l2) === -1) return null;
+    if (typeof input.reason !== "string") return null;
+    var reason = input.reason.replace(/\s+/g, " ").trim();
+    if (reason.length < 1 || reason.length > REASON_MAX) return null;
+    var sorted = features.slice().sort();
+    return { features: sorted, l2: input.l2, reason: reason, content: canonical(sorted, input.l2) };
+  }
+
+  /* The proposal an answer's stored tool calls hold: the LAST one that reads as valid, or null. One card per
+   * answer: an earlier proposal in the same turn is one the assistant went on to replace. */
+  function lastOf(toolCalls) {
+    var found = null;
+    (Array.isArray(toolCalls) ? toolCalls : []).forEach(function (call) {
+      var p = call && call.name === TOOL ? read(call.input) : null;
+      if (p) found = p;
+    });
+    return found;
+  }
+
+  function messageKey(id) {
+    if (typeof id === "number") return Math.floor(id) === id && id >= 0 && isFinite(id) ? String(id) : null;
+    return typeof id === "string" && MESSAGE.test(id) ? id : null;
+  }
+
+  function fresh(threadId, messageId, owner, content, uuid) {
+    return { v: 1, thread_id: threadId, message_id: messageKey(messageId), owner: owner, content: content,
+             keys: { save: uuid(), start: null }, version_id: null, start_signature: null, run_ref: null, outcome: null };
+  }
+
+  /* A stored attempt is used only if it is this answer's, this owner's, for these bytes, and whole. Anything
+   * else is no attempt: storage is shared by every account that signs in on this browser. */
+  function valid(p, threadId, messageId, owner, content) {
+    return !!p && typeof p === "object" && p.v === 1 && p.thread_id === threadId && p.message_id === messageKey(messageId) &&
+      p.message_id !== null && p.owner === owner && typeof p.content === "string" && p.content === content &&
+      !!p.keys && (p.keys.save === null || UUID.test(p.keys.save)) && (p.keys.start === null || UUID.test(p.keys.start)) &&
+      (p.version_id === null || UUID.test(p.version_id)) &&
+      (p.start_signature === null || typeof p.start_signature === "string") &&
+      (p.run_ref === null || (UUID.test(p.run_ref) && p.version_id !== null && OUTCOMES.indexOf(p.outcome) !== -1)) &&
+      (p.outcome === null || p.run_ref !== null);
+  }
+
+  function storeName(threadId, messageId) { return STORE_PREFIX + threadId + "." + messageKey(messageId); }
+  function load(storage, threadId, messageId, owner, content) {
+    var p = null;
+    try { p = JSON.parse(storage.getItem(storeName(threadId, messageId))); } catch (e) { p = null; }
+    return valid(p, threadId, messageId, owner, content) ? p : null;
+  }
+  function save(storage, p) {
+    try { storage.setItem(storeName(p.thread_id, p.message_id), JSON.stringify(p)); } catch (e) { /* the retry decides */ }
+  }
+  function clear(storage, threadId, messageId) {
+    try { storage.removeItem(storeName(threadId, messageId)); } catch (e) { /* nothing was held */ }
+  }
+  /* Signing out: an attempt names the reader, a conversation and a model. None of it stays. */
+  function clearAll(storage) {
+    try {
+      var names = [];
+      for (var i = 0; i < storage.length; i += 1) names.push(storage.key(i));
+      names.forEach(function (name) { if (typeof name === "string" && name.indexOf(STORE_PREFIX) === 0) storage.removeItem(name); });
+    } catch (e) { /* nothing could be listed */ }
+  }
+
+  /* What a failed request established. Nothing is assumed about a step that did not answer: `network` and
+   * `server` are unknown outcomes, and the same key is sent again. keep_flow.js's reading, restated. */
+  function kindOf(err) {
+    var status = err && err.status;
+    if (err && err.proposeShape) return "shape";
+    if (typeof status !== "number") return "network";
+    if (status === 401) return "auth";
+    if (status === 403 || status === 406 || status === 404) return "unavailable";
+    if (status === 400 || status === 413 || status === 422) return "invalid";
+    if (status === 408 || status === 429 || status >= 500) return "server";
+    return "other";
+  }
+  function shapeError(what) {
+    var e = new Error(what + " answered in an unexpected shape");
+    e.proposeShape = true;
+    return e;
+  }
+
+  /* One run of the attempt `p`, for the Investigation the card displayed (`shown`: investigation_id and
+   * selection_act_id). Resolves, never rejects, to one of:
+   *   { status: "started", run_ref, how }             how: accepted | replay | unconfirmed
+   *   { status: "not_started", run_ref }               the start was recorded and the run was not released
+   *   { status: "refused", step: "save" | "start", code }
+   *   { status: "no_context" } | { status: "context_changed" }      nothing was recorded by this run
+   *   { status: "failed", step, kind }                 step: check | save | start
+   * `calls.api(name, body)` is the page's PostgREST rpc; `calls.start(body)` posts to the run-start function and
+   * resolves to its JSON answer, or rejects with `status` set. `opts.persist(p)` is called whenever `p` changed
+   * and `opts.step(name, state)` as each step starts ("working") and answers ("done"). */
+  function run(p, shown, calls, opts) {
+    var persist = (opts && opts.persist) || function () {};
+    var note = (opts && opts.step) || function () {};
+    var uuid = opts && opts.uuid;
+    var at = "check";
+    var settled = null;
+
+    /* Before anything is recorded: the selection the card displayed may be stale. With none in force, or
+     * another one, nothing is saved; the card reads the context again and says what it is now. */
+    function check() {
+      at = "check";
+      if (p.run_ref) { settled = { status: p.outcome === "not_started" ? "not_started" : "started", run_ref: p.run_ref, how: "replay" }; return undefined; }
+      return calls.api("thread_selection", { p_thread_id: p.thread_id }).then(function (sel) {
+        if (sel === null || sel === undefined) { settled = { status: "no_context" }; return; }
+        if (typeof sel !== "object" || !UUID.test(sel.selection_act_id) || !UUID.test(sel.investigation_id)) throw shapeError("thread_selection");
+        if (sel.selection_act_id !== shown.selection_act_id || sel.investigation_id !== shown.investigation_id) settled = { status: "context_changed" };
+      });
+    }
+
+    function saveVersion() {
+      at = "save";
+      if (p.version_id) { note("save", "done"); return undefined; }
+      note("save", "working");
+      if (!p.keys.save) { p.keys.save = uuid(); persist(p); }
+      return calls.api("save_model_version", { p_content: p.content, p_idempotency_key: p.keys.save }).then(function (row) {
+        if (row && row.status === "refused" && typeof row.code === "string") {
+          /* A refused key replays its refusal, so the next try needs a new one. */
+          p.keys.save = null;
+          persist(p);
+          settled = { status: "refused", step: "save", code: row.code };
+          return;
+        }
+        if (!row || row.status !== "saved" || !UUID.test(row.version_id)) throw shapeError("save_model_version");
+        p.version_id = row.version_id;
+        persist(p);
+        note("save", "done");
+      });
+    }
+
+    function startRun() {
+      at = "start";
+      note("start", "working");
+      /* The seven keys the workspace page sends (run_start_core.js BODY_KEYS). The key belongs to these six
+       * choices: a start for another selection is another act, and gets another key. */
+      var body = { thread_id: p.thread_id, investigation_id: shown.investigation_id,
+                   displayed_selection_act_id: shown.selection_act_id, version_id: p.version_id,
+                   fixture_id: FIXTURE_ID, fixture_version: FIXTURE_VERSION };
+      var signature = JSON.stringify(body);
+      if (!p.keys.start || p.start_signature !== signature) { p.keys.start = uuid(); p.start_signature = signature; persist(p); }
+      body.idempotency_key = p.keys.start;
+      return calls.start(body).then(function (row) {
+        if (row && row.status === "refused" && row.stage === "act" && typeof row.code === "string") {
+          p.keys.start = null;
+          p.start_signature = null;
+          persist(p);
+          return { status: "refused", step: "start", code: row.code };
+        }
+        if (row && row.status === "refused" && row.stage === "release" && UUID.test(row.run_ref)) {
+          p.run_ref = row.run_ref;
+          p.outcome = "not_started";
+          persist(p);
+          return { status: "not_started", run_ref: row.run_ref };
+        }
+        if (!row || ["accepted", "replay", "unconfirmed"].indexOf(row.status) === -1 || !UUID.test(row.run_ref)) throw shapeError("run-start");
+        p.run_ref = row.run_ref;
+        p.outcome = "started";
+        persist(p);
+        note("start", "done");
+        return { status: "started", run_ref: row.run_ref, how: row.status };
+      });
+    }
+
+    return Promise.resolve().then(check)
+      .then(function () { return settled || Promise.resolve().then(saveVersion).then(function () { return settled || startRun(); }); })
+      .catch(function (err) { return { status: "failed", step: at, kind: kindOf(err) }; });
+  }
+
+  return { TOOL: TOOL, SCHEMA: SCHEMA, KIND: KIND, L2: L2, INPUTS: INPUTS, MAX_INPUTS: MAX_INPUTS, REASON_MAX: REASON_MAX,
+           FIXTURE_ID: FIXTURE_ID, FIXTURE_VERSION: FIXTURE_VERSION, STORE_PREFIX: STORE_PREFIX,
+           canonical: canonical, read: read, lastOf: lastOf, messageKey: messageKey, fresh: fresh, valid: valid,
+           load: load, save: save, clear: clear, clearAll: clearAll, kindOf: kindOf, run: run };
+})();
+</script>
+<script>
 (function () {
   "use strict";
 
@@ -3054,6 +3304,7 @@ var TclKeep = (function () {
     session = null;
     TclSession.clear();
     if (KEEP_ON) TclKeep.clearAll(keepStore());
+    TclPropose.clearAll(keepStore());
     const out = was ? TclSession.logout(was).catch(() => {}) : Promise.resolve();
     return Promise.race([out, new Promise((r) => setTimeout(r, LOGOUT_WAIT_MS))])
       .then(() => { location.replace(SIGNIN_URL); });
@@ -3211,6 +3462,7 @@ var TclKeep = (function () {
           ((m.trace && m.trace.tool_calls) || []).forEach((tc) => {
             if (tc && tc.recompute) renderCompare(body.parentNode, tc.recompute);
           });
+          proposeFromRow(body.parentNode, m);
         });
         projectPanel();
         /* The context read may have answered before these rows were here to hang the control on. */
@@ -4077,6 +4329,7 @@ var TclKeep = (function () {
       })
       .then((state) => {
         if (current()) { keepKnown = { threadId: threadId, state: state }; syncKeep(threadId, state); }
+        if (current()) proposeContext(threadId, state);
         return state;
       });
   }
@@ -4213,9 +4466,324 @@ var TclKeep = (function () {
         runs.forEach((row) => placeRun(row.record, threadId, epoch, 0));
         /* The thread opened at its end before these cards had any height; it is at its end again. */
         if (runs.length) scrollDown();
+        proposeRuns(threadId, epoch, runs);
       })
       .catch((err) => { if (err && (err.status === 404 || err.code === "PGRST202")) runsMissing = true; });
   }
+
+  /* ---------- a proposed model: the card, and the click that saves and runs it (specs/model-proposal.md) ----------
+   * This block is put into the page only by terminal.render(propose=True); without the flag none of it is here.
+   * The assistant's propose_model tool saved nothing and ran nothing. The card is drawn from the tool's stored
+   * input, read by TclPropose (propose_flow.js) with the save act's own rules, and the bytes are built here. One
+   * click records two of the user's own acts: api.save_model_version, then the run-start function. What the card
+   * says about the Investigation comes from the page's own read of the selection, never from the function. */
+  const PROPOSE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const PROPOSE_START_TIMEOUT_MS = 30000;
+  const PROPOSE_INPUT_TEXT = {
+    mkt: "the fixture's market price. Synthetic, not a market observation.",
+    sig: "the fixture's signal. Synthetic.",
+    late: "a signal recorded after the reference time. The evaluation refuses a run that uses it."
+  };
+  const PROPOSE_DOING = { check: "reading this conversation's context", save: "saving the model", start: "starting the run" };
+  const PROPOSE_SAVE_REFUSALS = {
+    document_invalid: "The service refused this model, so nothing was saved and nothing was run.",
+    idempotency_conflict: "This save conflicted with an earlier request, so nothing was saved and nothing was run. Try again."
+  };
+  const PROPOSE_START_REFUSALS = {
+    stale_selection: "This conversation's context changed since this card showed it. The model was saved; no run was started. The card now shows the context in force.",
+    selection_required: "This conversation is not in an Investigation now. The model was saved; no run was started.",
+    target_not_selected: "This conversation no longer works in that Investigation. The model was saved; no run was started.",
+    target_unavailable: "That conversation, Investigation or model is not available to this account. The model was saved; no run was started.",
+    idempotency_conflict: "This start conflicted with an earlier request. The model was saved; no run was started. Try again."
+  };
+  /* The proposal a live turn's tool_result carried, by its answer element, until `done` says the answer is stored. */
+  const proposeHeardBy = new WeakMap();
+  /* The attempt, held here as well as in storage: a browser that refuses the write must still resend the same
+   * keys on "Try again" within this page. */
+  const proposeHeld = new Map();
+  let proposeCards = [];
+  let proposeBusy = false;
+  let proposeSeq = 0;
+  /* What the newest context read established for a thread: { threadId, state, ctx }. `ctx` is the selection in
+   * force and its Investigation's name, and is what a click sends as the selection this card displayed. */
+  let proposeShown = null;
+
+  function proposeOwner() { return session && session.user ? session.user.id : null; }
+  function proposeLoad(card) {
+    const owner = proposeOwner();
+    const stored = TclPropose.load(keepStore(), card.threadId, card.messageId, owner, card.p.content);
+    if (stored) return stored;
+    const held = proposeHeld.get(card.threadId + "." + card.messageId);
+    return TclPropose.valid(held, card.threadId, card.messageId, owner, card.p.content) ? held : null;
+  }
+  function proposeSave(attempt) {
+    proposeHeld.set(attempt.thread_id + "." + attempt.message_id, attempt);
+    TclPropose.save(keepStore(), attempt);
+  }
+
+  /* A stored answer: its last valid proposal, unless the turn ended in an error. */
+  function proposeFromRow(msgEl, m) {
+    if (!m || m.role !== "assistant" || !m.trace || m.trace.error || !currentThread) return;
+    const p = TclPropose.lastOf(m.trace.tool_calls);
+    if (p) proposeCard(msgEl, currentThread, m.id, p);
+  }
+  /* A live turn: the function's echo of the input it accepted, read with the reader a stored call gets. */
+  function proposeHeard(msgEl, d) {
+    if (!d || d.name !== TclPropose.TOOL || d.ok !== true) return;
+    const p = TclPropose.read(d.proposal);
+    if (p) proposeHeardBy.set(msgEl, p);
+  }
+  /* The card waits for `done`: an answer that failed, or was not stored, is not one to build from. */
+  function proposeAtDone(msgEl, d, epoch) {
+    const p = proposeHeardBy.get(msgEl);
+    if (!p || !d || d.ok !== true || epoch !== panel.epoch || !currentThread) return;
+    if (TclPropose.messageKey(d.message_id) === null || ("persisted" in d && d.persisted !== true)) return;
+    proposeCard(msgEl, currentThread, d.message_id, p);
+    scrollDown();
+  }
+
+  function proposeCard(msgEl, threadId, messageId, p) {
+    const key = TclPropose.messageKey(messageId);
+    const words = TclRun.modelWords(p.content);
+    if (!msgEl || key === null || !words) return null;
+    const el = keepNode("div", "proposal");
+    el.setAttribute("data-proposal", key);
+    /* Above the answer's Record where a live turn has already added one, as a reopened conversation has it. */
+    const record = msgEl.querySelector("details.record");
+    if (record && record.parentNode === msgEl) msgEl.insertBefore(el, record); else msgEl.appendChild(el);
+    const card = { el: el, threadId: threadId, messageId: key, p: p, words: words, epoch: panel.epoch,
+                   matched: false, busy: false, said: null };
+    proposeCards = proposeCards.filter((c) => c.el.isConnected);
+    proposeCards.push(card);
+    proposePaint(card);
+    /* The context read may have answered before this card was here, and said only that there is a selection. */
+    if (proposeShown && proposeShown.threadId === threadId && proposeShown.state === "selected" && !proposeShown.ctx && !proposeShown.reading) {
+      proposeShown.reading = true;
+      proposeContext(threadId, "selected");
+    }
+    return card;
+  }
+
+  /* refreshContext's answer for this thread. "selected" is read again here for the two ids a start sends and
+   * the Investigation's name, and only when a card is there to use them. */
+  function proposeContext(threadId, state) {
+    proposeSeq += 1;
+    const seq = proposeSeq;
+    proposeCards = proposeCards.filter((c) => c.el.isConnected);
+    const settle = (shown) => {
+      if (seq !== proposeSeq) return;
+      proposeShown = shown;
+      proposeCards.forEach((c) => { if (c.threadId === threadId && c.el.isConnected) proposePaint(c); });
+    };
+    if (state !== "selected" || !proposeCards.some((c) => c.threadId === threadId)) {
+      settle({ threadId: threadId, state: state, ctx: null });
+      return Promise.resolve();
+    }
+    return api("thread_selection", { p_thread_id: threadId })
+      .then((sel) => {
+        if (sel === null || sel === undefined) return { threadId: threadId, state: "none", ctx: null };
+        if (typeof sel !== "object" || !PROPOSE_UUID.test(sel.selection_act_id) || !PROPOSE_UUID.test(sel.investigation_id)) throw new Error("unreadable selection");
+        return api("get_investigation", { p_id: sel.investigation_id }).then((inv) => {
+          if (!inv || typeof inv.title !== "string" || inv.title === "") throw new Error("no title");
+          return { threadId: threadId, state: "selected",
+                   ctx: { selection_act_id: sel.selection_act_id, investigation_id: sel.investigation_id, title: inv.title } };
+        });
+      })
+      .catch(() => ({ threadId: threadId, state: "unknown", ctx: null }))
+      .then(settle);
+  }
+
+  /* The conversation's runs, as loadRuns just read them. A card with no finished attempt in this browser is
+   * compared, in words, with the saved model of each run. A match is of content, never of identity. */
+  function proposeRuns(threadId, epoch, runs) {
+    const cards = proposeCards.filter((c) => c.el.isConnected && c.threadId === threadId && !c.matched);
+    if (!cards.length || !runs.length) return;
+    Promise.all(runs.map((row) => modelWordsOf(row.record && row.record.source_version_id))).then((words) => {
+      if (epoch !== panel.epoch || currentThread !== threadId) return;
+      cards.forEach((c) => {
+        if (words.indexOf(c.words) === -1) return;
+        c.matched = true;
+        if (c.el.isConnected && !c.busy) proposePaint(c);
+      });
+    });
+  }
+
+  function proposeRow(list, label, values) {
+    const row = keepNode("div", "proposal-row");
+    row.appendChild(keepNode("span", "proposal-key", label));
+    const val = keepNode("span", "proposal-val");
+    values.forEach((text) => val.appendChild(keepNode("span", "", text)));
+    row.appendChild(val);
+    list.appendChild(row);
+  }
+
+  function proposePaint(card) {
+    const el = card.el;
+    const attempt = proposeLoad(card);
+    const outcome = attempt && attempt.run_ref ? attempt.outcome : null;
+    const saved = !!(attempt && attempt.version_id);
+    const shown = proposeShown && proposeShown.threadId === card.threadId ? proposeShown : null;
+    el.textContent = "";
+    el.setAttribute("data-state", outcome || (saved ? "saved" : "proposed"));
+    const head = keepNode("div", "proposal-head");
+    head.appendChild(keepNode("span", "run-chip proposal-chip", "Proposed model"));
+    head.appendChild(keepNode("span", "run-chip", outcome === "started" ? "Saved · run started"
+      : outcome === "not_started" ? "Saved · run not started" : saved ? "Saved · not run" : "Not saved"));
+    el.appendChild(head);
+    el.appendChild(keepNode("div", "proposal-title", card.words));
+    el.appendChild(keepNode("p", "proposal-reason", card.p.reason));
+    const list = keepNode("div", "proposal-rows");
+    proposeRow(list, "Dataset", ["Synthetic fixture, 8 events. Not real games."]);
+    proposeRow(list, "Inputs", card.p.features.map((name) => name + ": " + PROPOSE_INPUT_TEXT[name]));
+    proposeRow(list, "Family", ["Logistic regression, penalty " + card.p.l2 + "."]);
+    proposeRow(list, "Compared with", ["The market input alone."]);
+    proposeRow(list, "Can produce", ["A synthetic backtest. Not prospective evidence, and no decision rests on it."]);
+    el.appendChild(list);
+
+    const say = (text) => el.appendChild(keepNode("p", "proposal-note", text));
+    let button = null;
+    if (outcome === "started") {
+      say("You saved this model and started a run of it from this card. The run's result is shown where it ran, further down this conversation.");
+    } else if (outcome === "not_started") {
+      say("You saved this model from this card. Its run was recorded but could not be started, and it will read as lost at its deadline.");
+    } else if (!shown) {
+      say("Reading this conversation's context.");
+    } else if (shown.state === "none") {
+      say("A run happens in an Investigation, and this conversation is not in one. Keep this conversation as an Investigation first" +
+          (KEEP_ON ? ", with the control under the newest answer" : ", from the workspace") + ". This card then offers Save and run.");
+    } else if (shown.state !== "selected" || !shown.ctx) {
+      say(shown.state === "selected" ? "Reading this conversation's context."
+        : "This conversation's context could not be read, so Save and run is not offered. Reopen the conversation to read it again.");
+    } else {
+      if (card.matched && !attempt) {
+        say("A run of a model with these same inputs and penalty was already started from this conversation, and its result is shown where it ran. This card cannot tell whether that run came from this proposal.");
+      }
+      el.appendChild(keepNode("p", "proposal-records", saved
+        ? "This model is already saved as a version. One click records one thing: a run of it started in the Investigation \"" + shown.ctx.title + "\". Nothing is shared."
+        : "One click records two things: this model saved as a version, and a run of it started in the Investigation \"" + shown.ctx.title + "\". Nothing is shared."));
+      const actions = keepNode("div", "proposal-actions");
+      button = keepNode("button", card.matched && !attempt ? "" : "fill",
+                        saved ? "Start the run" : card.matched && !attempt ? "Save and run again" : "Save and run");
+      button.type = "button";
+      button.setAttribute("data-proposal-go", card.messageId);
+      button.disabled = card.busy || proposeBusy;
+      button.addEventListener("click", () => proposeGo(card));
+      actions.appendChild(button);
+      el.appendChild(actions);
+    }
+    const status = keepNode("p", "proposal-status" + (card.said && card.said.bad ? " bad" : ""), card.said ? card.said.text : "");
+    status.setAttribute("role", "status");
+    el.appendChild(status);
+    return button;
+  }
+
+  /* The run-start function, called as the workspace page calls it. A request that never answers has an unknown
+   * outcome, which is what a dropped connection is, and the same key is sent again. */
+  function proposeStart(body) {
+    const call = fetch(SUPABASE_URL + "/functions/v1/run-start", {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + session.access_token,
+                 "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(body)
+    }).then((r) => r.json().catch(() => null).then((payload) => {
+      if (r.ok) return payload;
+      const e = new Error("HTTP " + r.status + " on run-start");
+      e.status = r.status;
+      e.code = payload && typeof payload.error === "string" ? payload.error : undefined;
+      throw e;
+    }));
+    return Promise.race([call, new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("no answer from run-start")), PROPOSE_START_TIMEOUT_MS);
+    })]);
+  }
+
+  function proposeSaid(out) {
+    const doing = PROPOSE_DOING[out.step] || "recording";
+    if (out.status === "started") {
+      return { bad: false, text: out.how === "replay" ? "This start was already accepted. Its run is shown below."
+        : out.how === "unconfirmed" ? "Saved, and the run was started, but the service's answer was lost. Its state shows below."
+        : "Saved, and the run started. Its result comes back below." };
+    }
+    if (out.status === "not_started") return { bad: true, text: "Saved. The run could not be started; it will be recorded as lost at its deadline." };
+    if (out.status === "no_context") return { bad: true, text: "This conversation is not in an Investigation now, so this click recorded nothing." };
+    if (out.status === "context_changed") return { bad: true, text: "This conversation's context changed since this card showed it, so this click recorded nothing. The card now shows the context in force." };
+    if (out.status === "refused" && out.step === "save") return { bad: true, text: PROPOSE_SAVE_REFUSALS[out.code] || "The save was refused, so nothing was saved and nothing was run." };
+    if (out.status === "refused") return { bad: true, text: PROPOSE_START_REFUSALS[out.code] || "The start was refused. The model was saved; no run was started." };
+    const kept = out.step === "start" ? " The model was saved." : "";
+    if (out.kind === "network") return { bad: true, text: "The connection dropped while " + doing + ". Try again repeats this request; it cannot save or start anything twice." };
+    if (out.kind === "server") return { bad: true, text: "The service did not answer while " + doing + ". Try again repeats this request; it cannot save or start anything twice." };
+    if (out.kind === "auth") return { bad: true, text: "Your sign-in was not accepted while " + doing + ". Sign in again, then try again." };
+    if (out.kind === "unavailable") return { bad: true, text: "This step is not served here, so " + doing + " did not happen." + kept };
+    return { bad: true, text: "The service's answer while " + doing + " could not be used." + kept + " Try again repeats this request." };
+  }
+
+  function proposeGo(card) {
+    const shown = proposeShown && proposeShown.threadId === card.threadId ? proposeShown : null;
+    const owner = proposeOwner();
+    if (proposeBusy || !shown || shown.state !== "selected" || !shown.ctx || !owner || card.threadId !== currentThread) return;
+    let attempt = proposeLoad(card);
+    if (!attempt) {
+      attempt = TclPropose.fresh(card.threadId, card.messageId, owner, card.p.content, () => crypto.randomUUID());
+      proposeSave(attempt);
+    }
+    proposeBusy = true;
+    card.busy = true;
+    card.said = { bad: false, text: "Recording…" };
+    proposePaint(card);
+    const hooks = { uuid: () => crypto.randomUUID(), persist: proposeSave,
+                    step: (name, state) => {
+                      if (state !== "working" || !card.el.isConnected) return;
+                      const status = card.el.querySelector(".proposal-status");
+                      if (status) status.textContent = name === "save" ? "Saving the model…" : "Starting the run…";
+                    } };
+    refreshIfNeeded()
+      .then((ok) => (ok ? TclPropose.run(attempt, shown.ctx, { api: keepApi, start: proposeStart }, hooks)
+                        : { status: "failed", step: "check", kind: "auth" }))
+      .catch(() => ({ status: "failed", step: "check", kind: "network" }))
+      .then((out) => {
+        proposeBusy = false;
+        card.busy = false;
+        card.said = proposeSaid(out);
+        proposeCards.forEach((c) => { if (c.el.isConnected) proposePaint(c); });
+        if (out.status === "started" || out.status === "not_started") { proposeShowRun(card.threadId, card.epoch, out.run_ref); return; }
+        /* Whatever was refused about the context, the page reads it again and the card follows that read. */
+        if (currentThread === card.threadId && (out.status === "no_context" || out.status === "context_changed" ||
+                                                (out.status === "refused" && out.step === "start"))) refreshContext(card.threadId);
+      });
+  }
+
+  /* The run's line. start_run wrote a command message this view has not read: it is read here, by the id the
+   * run's own record names, and put where openThread would have put it. Then the existing run card takes over. */
+  function proposeShowRun(threadId, epoch, runRef) {
+    const here = () => epoch === panel.epoch && currentThread === threadId;
+    if (!here()) return Promise.resolve();
+    return api("thread_runs", { p_thread_id: threadId })
+      .then((rows) => {
+        const row = TclRun.runsOf(rows).filter((r) => r.run_ref === runRef)[0];
+        const id = row ? TclRun.lineId(row.record.command_message_id) : null;
+        if (id === null || !here() || $("messages").querySelector('.run-line[data-message="' + id + '"]')) return undefined;
+        return rest("messages?select=id,content,kind&id=eq." + id, true).then((found) => {
+          const m = Array.isArray(found) ? found[0] : null;
+          if (!m || m.kind !== "command" || !here() || $("messages").querySelector('.run-line[data-message="' + id + '"]')) return;
+          const line = keepNode("div", "run-line");
+          line.setAttribute("data-message", id);
+          line.append(keepNode("span", "meta", "Run"), " ", keepNode("span", "", m.content || ""));
+          $("messages").appendChild(line);
+        });
+      })
+      .catch(() => undefined)
+      .then(() => (here() ? loadRuns(threadId, epoch) : undefined))
+      .then(() => { if (here()) scrollDown(); });
+  }
+
+  /* For a test that drives this page's own bytes: the cards in view, and a card drawn from a stored row. */
+  window.__terminalPropose = {
+    cards: function () {
+      return proposeCards.filter((c) => c.el.isConnected).map((c) => ({ message: c.messageId, state: c.el.getAttribute("data-state"),
+        words: c.words, content: c.p.content, offered: !!c.el.querySelector("[data-proposal-go]"), text: c.el.textContent }));
+    },
+    context: function () { return proposeShown; }
+  };
 
   /* ---------- keep this conversation as an Investigation (specs/keep-as-investigation.md) ----------
    * One click, three existing acts, each its own record: TclKeep (keep_flow.js) runs them and keeps
@@ -4651,6 +5219,7 @@ var TclKeep = (function () {
          * transient and the next tool overwrites it. Nothing is drawn from `d`'s own figures —
          * `renderCompare` fetches the rows and computes. */
         if (d.recompute) renderCompare(answerBody.parentNode, d.recompute);
+        proposeHeard(answerBody.parentNode, d);
       },
       chart: (d) => {
         if (epoch !== panel.epoch) return;
@@ -4685,6 +5254,7 @@ var TclKeep = (function () {
         if (KEEP_ON && !d.ok) answerMsg.setAttribute("data-keep", "no");
         if ("persisted" in d) showSave(answerMsg, d.persisted);
         if (d.persisted === true && isTurnId(d.turn_id)) addRecord(answerMsg, d.turn_id);
+        proposeAtDone(answerMsg, d, epoch);
         /* The selection may have changed since the thread opened; the page reads it again. */
         if (epoch === panel.epoch && currentThread) refreshContext(currentThread);
       }
