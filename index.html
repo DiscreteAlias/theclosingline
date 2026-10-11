@@ -127,8 +127,8 @@ var TclSession = (function () {
  */
 var TclFixtures = (function () {
   "use strict";
-  var FIXTURES = [["journey0-synthetic", 2], ["synthetic-league", 1]];
-  var DATASETS = [["synthetic-league", 1]];
+  var FIXTURES = [["journey0-synthetic", 2], ["nfl-games", 1], ["synthetic-league", 1]];
+  var DATASETS = [["nfl-games", 1], ["synthetic-league", 1]];
   function find(list, id) {
     for (var i = 0; i < list.length; i += 1) if (list[i][0] === id) return list[i];
     return null;
