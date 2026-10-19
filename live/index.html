@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>the closing line</title><script>
+const section = "markets";
+const query = new URLSearchParams(location.search);
+let view = section, id = null;
+if (section === "investigations") {
+  if (query.has("version") && !query.has("id")) { view = "models"; id = query.get("version"); }
+  else id = query.get("id");
+}
+if (section === "chat") {
+  const named = /^#thread=([0-9a-f-]+)$/.exec(location.hash);
+  id = named ? named[1] : query.get("thread");
+}
+location.replace("/" + location.search + "#/" + view + (id ? "/" + encodeURIComponent(id) : ""));
+</script></head><body><p>This view is in the workspace. <a href="/#/markets">Continue</a>.</p></body></html>
