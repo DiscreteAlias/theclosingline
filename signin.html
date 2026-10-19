@@ -13,10 +13,20 @@
   sign-in box, 868 px of it. This page has no shell to show, and the terminal no longer has a sign-in
   box to show one under, so that defect has nowhere to happen on either page.
 
-  WHAT THIS PAGE DOES, and with which credential: signs a user in, or creates an account, with GoTrue
-  and the PUBLISHABLE key; stores the session where session.js keeps it, reads it back, and only then
-  goes to the terminal. With a session already stored it goes there at once, from <head>, before the
-  body is parsed. It reads no table.
+  WHAT THIS PAGE DOES, and with which credential: signs a user in with GoTrue and the PUBLISHABLE key;
+  stores the session where session.js keeps it, reads it back, and only then goes to the terminal. With
+  a session already stored it goes there at once, from <head>, before the body is parsed. It reads no
+  table.
+
+  INVITE ONLY (owner, 2026-10-16; specs/invite-only-signin.md). The page offers no way to open an
+  account. That is the page's half only: the publishable key it carries can call GoTrue's sign-up from
+  anywhere, and the lock is the hosted project's "Allow new users to sign up" setting, turned off by
+  the owner. An account is opened by an invitation email, and the link in it lands HERE (directly, or
+  forwarded from the root) with GoTrue's result in the URL fragment; the page then asks for a password.
+  A password-reset link is the same shape and takes the same path.
+  WHOSE ACCOUNT (specs/invite-shows-account.md): the link carries a live session, and a crafted one can carry
+  its sender's. The set-password form is shown only once GoTrue has named the account for the link's token,
+  and it names it; "not you?" discards the link. A link GoTrue names no email for is refused.
   No package, no CDN, no HTML strings: every node it changes is changed through textContent.
 -->
 <script>
@@ -127,10 +137,33 @@ var TclSession = (function () {
 
 </script>
 <script>
-  /* Signed in already, so nothing on this page is for this reader. The document is hidden first so
-   * that nothing paints while the terminal loads, and no request is made: the terminal refreshes an
-   * expired token itself. */
-  if (TclSession.load()) { document.documentElement.hidden = true; location.replace(TERMINAL_URL); }
+  /* An emailed link's result, read from the fragment and TAKEN OUT OF THE ADDRESS BAR before anything
+   * else, so the tokens it carries are not left in history or copied with the URL. GoTrue's implicit
+   * flow is the only one an invitation has (Supabase: PKCE is not supported for invites):
+   *   #access_token=…&expires_in=…&refresh_token=…&token_type=bearer&type=invite|recovery
+   *   #error=…&error_code=…&error_description=…        (an expired or spent link)
+   * Anything else carrying a token (a magic link, an old sign-up confirmation) is dropped unkept. */
+  const EMAILED = (function () {
+    const h = location.hash || "";
+    if (h.charAt(0) !== "#") return null;
+    const p = new URLSearchParams(h.slice(1));
+    if (!p.has("access_token") && !p.has("error") && !p.has("error_code")) return null;
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* nothing to scrub with */ }
+    if (p.has("error") || p.has("error_code")) {
+      return { kind: "error", text: p.get("error_description") || p.get("error_code") || p.get("error") };
+    }
+    const kind = p.get("type");
+    if ((kind === "invite" || kind === "recovery") && p.get("access_token") && p.get("refresh_token")) {
+      return { kind: kind, grant: { access_token: p.get("access_token"), refresh_token: p.get("refresh_token"),
+                                    expires_in: Number(p.get("expires_in")) || 3600 } };
+    }
+    return { kind: "other" };
+  })();
+  /* Signed in already, so nothing on this page is for this reader — unless an emailed link brought them,
+   * which is an act of its own: a person setting their password on a browser where someone else is signed
+   * in must be able to. The document is hidden first so that nothing paints while the terminal loads, and
+   * no request is made: the terminal refreshes an expired token itself. */
+  if (!EMAILED && TclSession.load()) { document.documentElement.hidden = true; location.replace(TERMINAL_URL); }
 </script>
 <style>
   /* Inconsolata: SIL Open Font License 1.1, Copyright 2006 The Inconsolata Project Authors. The
@@ -181,6 +214,10 @@ var TclSession = (function () {
   .auth .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
   .note { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 1.4em; }
   .note.bad { color: var(--bad); }
+  .aside { font-size: 12px; color: var(--muted); margin: 14px 0 0; }
+  /* The account an emailed link opens. An address is one unbroken run, so it may break anywhere rather than
+     push the page sideways on a phone. */
+  .account { margin: 0 0 4px; color: var(--primary); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -190,7 +227,7 @@ var TclSession = (function () {
 </header>
 
 <div id="auth" class="auth">
-  <h1>Sign in</h1>
+  <h1 id="auth-title">Sign in</h1>
   <form id="auth-form">
     <label for="email">email</label>
     <input id="email" type="email" autocomplete="username" required>
@@ -198,7 +235,18 @@ var TclSession = (function () {
     <input id="password" type="password" autocomplete="current-password" minlength="8" required>
     <div class="row">
       <button type="submit" class="primary" id="signin">sign in</button>
-      <button type="button" id="signup">create account</button>
+    </div>
+    <p id="invite-only" class="aside">invite only: accounts are opened from an invitation email. There is no sign-up.</p>
+  </form>
+  <form id="setpw-form" hidden>
+    <p id="setpw-account" class="account"></p>
+    <label for="new-password">new password</label>
+    <input id="new-password" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="new-password-again">new password, again</label>
+    <input id="new-password-again" type="password" autocomplete="new-password" minlength="8" required>
+    <div class="row">
+      <button type="submit" class="primary" id="setpw">set password</button>
+      <button type="button" id="not-you">not you? sign in instead</button>
     </div>
   </form>
   <p id="auth-note" class="note"></p>
@@ -220,6 +268,13 @@ var TclSession = (function () {
     return new Error(body.error_description || body.msg || body.error || (what + " failed (HTTP " + status + ")"));
   }
 
+  /* A session nobody will hold is revoked, and ONLY that session: `scope=local` ends this one, where GoTrue's
+   * default (global) would sign the account out of every other session it has — a mistaken "not you" on a real
+   * reset link, or a browser that refuses storage, must not do that. */
+  function revoke(s) {
+    TclSession.call("logout?scope=local", {}, s.access_token, true).catch(() => {});
+  }
+
   /* A grant becomes a stored session, and the terminal opens it. Stored AND READ BACK first: a
    * browser that refuses site storage would otherwise send the reader to a terminal that finds no
    * session and sends them straight back here. The session that cannot be kept is revoked rather than
@@ -227,7 +282,7 @@ var TclSession = (function () {
   function enter(body) {
     const s = TclSession.fromGrant(body);
     if (!TclSession.save(s)) {
-      TclSession.logout(s).catch(() => {});
+      revoke(s);
       say("signed in, but this browser will not let the page keep the session, so the terminal " +
           "cannot open it: allow this site to store data, then sign in again", true);
       return;
@@ -242,11 +297,65 @@ var TclSession = (function () {
     enter(r.body);
   }
 
-  async function signUp(email, password) {
-    const r = await TclSession.call("signup", { email: email, password: password });
-    if (r.status !== 200) throw refused(r.body, "sign-up", r.status);
-    if (r.body.access_token) { enter(r.body); return; }
-    say("account created: confirm the email we sent, then sign in");
+  /* The emailed link's token sets the password: PUT, which session.js's POST-only `call` does not make,
+   * so it is this page's own request. The session is the link's tokens and the user GoTrue answers with.
+   * Two refusals AFTER GoTrue's 200, both keeping nothing:
+   *  - the link was discarded ("not you") while the PUT was in flight: `grant` is no longer this request's
+   *    `g`, so the answer is dropped and the session it belongs to revoked (again — the discard revoked it too);
+   *  - GoTrue answered for a user other than the one the form named: refused as an expired link is. */
+  async function setPassword(g, password) {
+    const r = await fetch(SUPABASE_URL + "/auth/v1/user", {
+      method: "PUT",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + g.access_token, "Content-Type": "application/json" },
+      body: JSON.stringify({ password: password })
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.status !== 200 || !body.id) throw refused(body, "setting the password", r.status);
+    if (grant !== g) { revoke(g); return; }
+    if (body.id !== shown) {
+      discard();
+      say("GoTrue answered for an account that is not the account this link named, so nothing is kept: " +
+          "sign in with your email and password", true);
+      return;
+    }
+    enter({ access_token: g.access_token, refresh_token: g.refresh_token, expires_in: g.expires_in, user: body });
+  }
+
+  /* The emailed link's tokens, held here and nowhere else until the password is set or the link is discarded,
+   * and the id of the account GoTrue named for them (the one the form shows). */
+  let grant = EMAILED && EMAILED.grant ? EMAILED.grant : null;
+  let shown = null;
+
+  /* WHOSE ACCOUNT the link opens, asked of GoTrue with the link's own token, before the form can be used. An
+   * emailed link carries a live session, and a crafted one carries its sender's: without the account named, a
+   * person could set a password on, and then work inside, an account that is not theirs (login CSRF). What is
+   * shown is the address GoTrue returned and nothing else, so a link it names no address for is refused. */
+  async function whose(g) {
+    const r = await fetch(SUPABASE_URL + "/auth/v1/user", {
+      method: "GET",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + g.access_token }
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.status !== 200 || !body.id) throw refused(body, "reading the account the link is for", r.status);
+    if (typeof body.email !== "string" || body.email === "") {
+      throw new Error("that link does not say which account it is for, so it cannot be used here: " +
+                      "sign in with your email and password");
+    }
+    return { id: body.id, email: body.email };
+  }
+
+  /* The link set aside: its tokens dropped from the page, its session revoked rather than left live on the
+   * server with nobody holding it (as enter() does), and the sign-in form back. Nothing is stored, and a
+   * session this browser already holds is not the link's to end. */
+  function discard() {
+    const g = grant;
+    grant = null;
+    shown = null;
+    if (g) revoke(g);
+    $("setpw-account").textContent = "";
+    $("setpw-form").hidden = true;
+    $("auth-form").hidden = false;
+    $("auth-title").textContent = "Sign in";
   }
 
   $("auth-form").addEventListener("submit", (e) => {
@@ -254,19 +363,40 @@ var TclSession = (function () {
     say("signing in");
     signIn($("email").value.trim(), $("password").value).catch((err) => say(err.message, true));
   });
-  $("signup").addEventListener("click", () => {
-    /* The button is type="button", so the form's `required` and `minlength` never run for it — only
-     * the submit button (sign in) triggers them — and an empty email reached GoTrue, which reads a
-     * signup with no email as an anonymous sign-up and answers "Anonymous sign-ins are disabled"
-     * (measured 2026-09-17). The check lives here, where the values are read, and no call is made
-     * until both are present. */
-    const email = $("email").value.trim();
-    const password = $("password").value;
-    if (!email || !password) { say("enter an email and a password to create an account", true); return; }
-    if (password.length < 8) { say("the password must be at least 8 characters", true); return; }
-    say("creating account");
-    signUp(email, password).catch((err) => say(err.message, true));
-  });
+
+  if (grant) {
+    $("auth-title").textContent = EMAILED.kind === "invite" ? "Set a password" : "Reset your password";
+    $("auth-form").hidden = true;
+    say("reading which account this link is for");
+    whose(grant).then((user) => {
+      shown = user.id;
+      $("setpw-account").textContent = "for " + user.email;
+      $("setpw-form").hidden = false;
+      say("");
+    }, (err) => { discard(); say(err.message, true); });
+    $("setpw-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (!grant) return;   /* discarded: the link's token is not used again */
+      /* Checked here as well as by the inputs' own `required` and `minlength`, so no call is made on what
+       * a browser without constraint validation would let through. */
+      const password = $("new-password").value, again = $("new-password-again").value;
+      if (!password || !again) { say("enter the new password twice", true); return; }
+      if (password !== again) { say("the two passwords differ", true); return; }
+      if (password.length < 8) { say("the password must be at least 8 characters", true); return; }
+      say("setting the password");
+      /* A refusal that arrives after "not you" is not told over it: the link is no longer this page's. */
+      const g = grant;
+      setPassword(g, password).catch((err) => { if (grant === g) say(err.message, true); });
+    });
+    $("not-you").addEventListener("click", () => {
+      discard();
+      say("that link is set aside and nothing from it is kept: sign in with your own email and password");
+    });
+  } else if (EMAILED && EMAILED.kind === "error") {
+    say(EMAILED.text, true);
+  } else if (EMAILED) {
+    say("that link is not an invitation or a password reset: sign in with your email and password", true);
+  }
 })();
 </script>
 </body>
